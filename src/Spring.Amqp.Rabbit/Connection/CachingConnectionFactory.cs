@@ -1,4 +1,5 @@
-﻿using RabbitMQ.Client;
+﻿using Microsoft.Extensions.Logging;
+using RabbitMQ.Client;
 using Spring.Amqp.Rabbit.Events;
 using System;
 using System.Collections.Concurrent;
@@ -8,8 +9,10 @@ using System.Threading;
 
 namespace Spring.Amqp.Rabbit.Connection
 {
-    public class CachingConnectionFactory
+    public class CachingConnectionFactory : AbstractConnectionFactory
     {
+        #region Fields
+
         private const int ChannelExecShutdownTimeout = 30;
         private const int DefaultChannelCacheSize = 25;
         private const string DefaultDeferredPoolPrefix = "spring-rabbit-deferred-pool-";
@@ -27,12 +30,106 @@ namespace Spring.Amqp.Rabbit.Connection
         private readonly LinkedList<IChannelProxy> _cachedChannelsTransactional = new LinkedList<IChannelProxy>();
         private readonly IDictionary<IConnection, Semaphore> _checkoutPermits
             = new Dictionary<IConnection, Semaphore>();
+        private readonly IDictionary<string, int> _channelHighWatermarks = new Dictionary<string, int>();
+        private readonly int _connectionHighWatermark;
+        private readonly CachingConnectionFactory _publisherConnectionFactory;
+        private readonly object _connectionMonitor = new object();
 
+        private long _channelCheckoutTimeout = 0L;
         private CacheMode _cacheMode = CacheMode.Channel;
+        private int _channelCacheSize = DefaultChannelCacheSize;
+        private int _connectionCacheSize = 1;
+        private int _connectionLimit = int.MaxValue;
+        private bool _publisherReturns;
+        private volatile bool _active = true;
+        private volatile bool _initialized;
+        private volatile bool _stopped;
 
-        public CachingConnectionFactory()
+        #endregion
+
+        #region Constructors
+
+        public CachingConnectionFactory() : this(null as string)
         {
-            _connection = new ChannelCachingConnectionProxy(this, null);
+        }
+
+        public CachingConnectionFactory(string hostname) : this(hostname, AmqpTcpEndpoint.UseDefaultPort)
+        {
+        }
+
+        public CachingConnectionFactory(int port) : this(null, port)
+        {
+        }
+        
+        public CachingConnectionFactory(string hostNameArg, int port) : base(NewRabbitConnectionFactory())
+        {
+            Host = string.IsNullOrWhiteSpace(hostNameArg) ? GetDefaultHostName() : hostNameArg;
+            Port = port;
+
+            _publisherConnectionFactory = new CachingConnectionFactory(RabbitConnectionFactory, true);
+            SetPublisherConnectionFactory(_publisherConnectionFactory);
+        }
+
+        public CachingConnectionFactory(Uri uri) : base(NewRabbitConnectionFactory())
+        {
+            SetUri(uri);
+            _publisherConnectionFactory = new CachingConnectionFactory(RabbitConnectionFactory, true);
+            SetPublisherConnectionFactory(_publisherConnectionFactory);
+        }
+
+        public CachingConnectionFactory(ConnectionFactory rabbitConnectionFactory) : this(rabbitConnectionFactory, false)
+        {
+        }
+
+        private CachingConnectionFactory(ConnectionFactory rabbitConnectionFactory, bool isPublisherFactory)
+            : base(rabbitConnectionFactory)
+        {
+            if (rabbitConnectionFactory == null) throw new ArgumentNullException(nameof(rabbitConnectionFactory));
+
+            if (!isPublisherFactory)
+            {
+                if (rabbitConnectionFactory.AutomaticRecoveryEnabled)
+                {
+                    rabbitConnectionFactory.AutomaticRecoveryEnabled = false;
+                    _logger.LogWarning("***\nAutomatic Recovery was Enabled in the provided connection factory;\n"
+                        + "while Spring AMQP is generally compatible with this feature, there\n"
+                        + "are some corner cases where problems arise. Spring AMQP\n"
+                        + "prefers to use its own recovery mechanisms; when this option is true, you may receive\n"
+                        + "'AutoRecoverConnectionNotCurrentlyOpenException's until the connection is recovered.\n"
+                        + "It has therefore been disabled; if you really wish to enable it, use\n"
+                        + "'RabbitConnectionFactory.AutomaticRecoveryEnabled = true',\n"
+                        + "but this is discouraged.");
+                }
+
+                _publisherConnectionFactory = new CachingConnectionFactory(RabbitConnectionFactory, true);
+                SetPublisherConnectionFactory(_publisherConnectionFactory);
+            }
+            else
+            {
+                _publisherConnectionFactory = null;
+            }
+        }
+
+        #endregion
+
+        public int ChannelCacheSize
+        {
+            get => _channelCacheSize;
+            set
+            {
+                if (value < 1)
+                    throw new ArgumentOutOfRangeException(nameof(ChannelCacheSize),
+                        "Channel cache size must be 1 or higher");
+                
+                _channelCacheSize = value;
+
+                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelCacheSize = value;
+            }
+        }
+
+        private static ConnectionFactory NewRabbitConnectionFactory()
+        {
+            return new ConnectionFactory { AutomaticRecoveryEnabled = false };
         }
 
         private IModel GetChannel(ChannelCachingConnectionProxy connection, bool transactional)
