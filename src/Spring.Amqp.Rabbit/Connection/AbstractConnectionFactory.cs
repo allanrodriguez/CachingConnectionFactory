@@ -8,7 +8,6 @@ namespace Spring.Amqp.Rabbit.Connection
 {
     public abstract class AbstractConnectionFactory
     {
-        protected readonly ILogger _logger;
         private readonly ConnectionFactory _rabbitConnectionFactory;
         private AbstractConnectionFactory _publisherConnectionFactory;
 
@@ -18,7 +17,7 @@ namespace Spring.Amqp.Rabbit.Connection
                 throw new ArgumentNullException(nameof(rabbitConnectionFactory),
                     "Target ConnectionFactory must not be null");
 
-            using (var loggerFactory = new LoggerFactory()) _logger = loggerFactory.CreateLogger(GetType());
+            using (var loggerFactory = new LoggerFactory()) Logger = loggerFactory.CreateLogger(GetType());
         }
 
         public string Host
@@ -35,6 +34,8 @@ namespace Spring.Amqp.Rabbit.Connection
 
         public ConnectionFactory RabbitConnectionFactory => _rabbitConnectionFactory;
 
+        protected ILogger Logger { get; }
+
         public void SetUri(Uri uri)
         {
             _rabbitConnectionFactory.Uri = uri;
@@ -47,11 +48,11 @@ namespace Spring.Amqp.Rabbit.Connection
             try
             {
                 temp = Dns.GetHostName();
-                _logger.LogDebug($"Using hostname [{temp}] for hostname.");
+                Logger.LogDebug($"Using hostname [{temp}] for hostname.");
             }
             catch (SocketException ex)
             {
-                _logger.LogWarning(ex, "Could not get host name, using 'localhost' as default value");
+                Logger.LogWarning(ex, "Could not get host name, using 'localhost' as default value");
                 temp = "localhost";
             }
 
