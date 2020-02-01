@@ -1,4 +1,4 @@
-﻿using RabbitMQ.Client.Exceptions;
+using RabbitMQ.Client.Exceptions;
 using System;
 
 namespace Spring.Amqp.Rabbit.Connection

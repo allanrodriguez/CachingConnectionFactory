@@ -1,4 +1,4 @@
-﻿namespace Spring.Amqp.Rabbit.Connection
+namespace Spring.Amqp.Rabbit.Connection
 {
     /// <summary>
     /// Subinterface of <see cref="IConnection"/> to be implemented by Connection proxies. Allows access to the

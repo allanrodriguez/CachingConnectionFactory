@@ -1,4 +1,4 @@
-﻿namespace Spring.Amqp.Rabbit.Connection
+namespace Spring.Amqp.Rabbit.Connection
 {
     public enum CacheMode
     {
