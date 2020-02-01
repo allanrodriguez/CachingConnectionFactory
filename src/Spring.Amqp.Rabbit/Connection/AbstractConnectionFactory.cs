@@ -6,10 +6,12 @@ using System.Net.Sockets;
 
 namespace Spring.Amqp.Rabbit.Connection
 {
-    public abstract class AbstractConnectionFactory
+    public abstract class AbstractConnectionFactory : IDisposable
     {
         private readonly ConnectionFactory _rabbitConnectionFactory;
+        
         private AbstractConnectionFactory _publisherConnectionFactory;
+        private bool _disposedValue;
 
         public AbstractConnectionFactory(ConnectionFactory rabbitConnectionFactory)
         {
@@ -41,6 +43,12 @@ namespace Spring.Amqp.Rabbit.Connection
             _rabbitConnectionFactory.Uri = uri;
         }
 
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
         protected string GetDefaultHostName()
         {
             string temp;
@@ -62,6 +70,15 @@ namespace Spring.Amqp.Rabbit.Connection
         protected void SetPublisherConnectionFactory(AbstractConnectionFactory publisherConnectionFactory)
         {
             _publisherConnectionFactory = publisherConnectionFactory;
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (_disposedValue) return;
+
+            if (disposing && _publisherConnectionFactory != null) _publisherConnectionFactory.Dispose();
+
+            _disposedValue = true;
         }
     }
 }

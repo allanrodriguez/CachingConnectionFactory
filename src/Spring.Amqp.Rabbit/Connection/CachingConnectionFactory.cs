@@ -5,7 +5,6 @@ using Spring.Amqp.Rabbit.Events;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -33,16 +32,18 @@ namespace Spring.Amqp.Rabbit.Connection
         private readonly LinkedList<IChannelProxy> _cachedChannelsTransactional = new LinkedList<IChannelProxy>();
         private readonly IDictionary<IConnection, SemaphoreSlim> _checkoutPermits
             = new Dictionary<IConnection, SemaphoreSlim>();
-        private readonly IDictionary<string, int> _channelHighWaterMarks = new Dictionary<string, int>();
-        private readonly int _connectionHighWaterMark;
+        private readonly ConcurrentDictionary<string, int> _channelHighWaterMarks
+            = new ConcurrentDictionary<string, int>();
         private readonly CachingConnectionFactory _publisherConnectionFactory;
         private readonly object _connectionMonitor = new object();
 
+        private int _connectionHighWaterMark;
         private int _channelCheckoutTimeout;
         private CacheMode _cacheMode = CacheMode.Channel;
         private int _channelCacheSize = DefaultChannelCacheSize;
         private int _connectionCacheSize = 1;
         private int _connectionLimit = int.MaxValue;
+        private ConfirmType _confirmType = ConfirmType.None;
         private bool _publisherReturns;
         private volatile bool _active = true;
         private volatile bool _initialized;
@@ -66,6 +67,8 @@ namespace Spring.Amqp.Rabbit.Connection
         
         public CachingConnectionFactory(string hostNameArg, int port) : base(NewRabbitConnectionFactory())
         {
+            _connection = new ChannelCachingConnectionProxy(this, null);
+
             Host = string.IsNullOrWhiteSpace(hostNameArg) ? GetDefaultHostName() : hostNameArg;
             Port = port;
 
@@ -75,7 +78,10 @@ namespace Spring.Amqp.Rabbit.Connection
 
         public CachingConnectionFactory(Uri uri) : base(NewRabbitConnectionFactory())
         {
+            _connection = new ChannelCachingConnectionProxy(this, null);
+
             SetUri(uri);
+
             _publisherConnectionFactory = new CachingConnectionFactory(RabbitConnectionFactory, true);
             SetPublisherConnectionFactory(_publisherConnectionFactory);
         }
@@ -88,6 +94,8 @@ namespace Spring.Amqp.Rabbit.Connection
             : base(rabbitConnectionFactory)
         {
             if (rabbitConnectionFactory == null) throw new ArgumentNullException(nameof(rabbitConnectionFactory));
+
+            _connection = new ChannelCachingConnectionProxy(this, null);
 
             if (!isPublisherFactory)
             {
@@ -159,6 +167,8 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
+        public bool PublisherConfirms => _confirmType == ConfirmType.Correlated;
+
         public bool PublisherReturns
         {
             get => _publisherReturns;
@@ -200,6 +210,28 @@ namespace Spring.Amqp.Rabbit.Connection
             if (_publisherConnectionFactory != null) _publisherConnectionFactory.AfterPropertiesSet();
         }
 
+        public void ResetConnection()
+        {
+            lock (_connectionMonitor)
+            {
+                if (_connection.TargetConnection != null) _connection.Dispose();
+
+                foreach (var connection in _allocatedConnections) connection.Dispose();
+
+                foreach (var waterMark in _channelHighWaterMarks)
+                    _channelHighWaterMarks.TryUpdate(waterMark.Key, 0, waterMark.Value);
+
+                Interlocked.Exchange(ref _connectionHighWaterMark, 0);
+            }
+
+            if (_publisherConnectionFactory != null) _publisherConnectionFactory.ResetConnection();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+        }
+
         private static ConnectionFactory NewRabbitConnectionFactory()
         {
             return new ConnectionFactory { AutomaticRecoveryEnabled = false };
@@ -209,6 +241,20 @@ namespace Spring.Amqp.Rabbit.Connection
         {
             _channelHighWaterMarks.Add(_cachedChannelsNonTransactional.GetIdentityHexString(), 0);
             _channelHighWaterMarks.Add(_cachedChannelsTransactional.GetIdentityHexString(), 0);
+        }
+
+        private void ShutdownCompleted(object sender, ShutdownEventArgs eventArgs)
+        {
+            //this.closeExceptionLogger.log(logger, "Channel shutdown", eventArgs);
+            var protocolClassId = eventArgs.ClassId;
+            if (protocolClassId == RabbitUtils.ChannelProtocolClassId20)
+            {
+                //getChannelListener().onShutDown(eventArgs);
+            }
+            else if (protocolClassId == RabbitUtils.ConnectionProtocolClassId10)
+            {
+                //getConnectionListener().onShutDown(eventArgs);
+            }
         }
 
         private IModel GetChannel(ChannelCachingConnectionProxy connection, bool transactional)
@@ -231,7 +277,7 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 try
                 {
-
+                    channel = GetCachedChannelProxy(connection, channelList, transactional);
                 }
                 catch (Exception)
                 {
@@ -355,10 +401,11 @@ namespace Spring.Amqp.Rabbit.Connection
         {
             var targetChannel = CreateBareChannel(connection, transactional);
 
-            if (Logger.IsEnabled(LogLevel.Debug)) Logger.LogDebug("Creating cached Rabbit Channel from {targetChannel}.", targetChannel);
+            if (Logger.IsEnabled(LogLevel.Debug))
+                Logger.LogDebug("Creating cached Rabbit Channel from {targetChannel}.", targetChannel);
         }
 
-        private IModel CreateBareChannel(ChannelCachingConnectionProxy connection, boolean transactional)
+        private IModel CreateBareChannel(ChannelCachingConnectionProxy connection, bool transactional)
         {
             if (_cacheMode == CacheMode.Channel)
             {
@@ -368,12 +415,12 @@ namespace Spring.Amqp.Rabbit.Connection
                     {
                         if (!_connection.IsOpen())
                         {
-                            _connection.notifyCloseIfNecessary();
+                            //_connection.notifyCloseIfNecessary();
                         }
 
                         if (!_connection.IsOpen())
                         {
-                            _connection._target = null;
+                            _connection.TargetConnection = null;
                             CreateConnection();
                         }
                     }
@@ -391,9 +438,9 @@ namespace Spring.Amqp.Rabbit.Connection
                         if (_allocatedConnectionTransactionalChannels.TryGetValue(connection, out channel))
                             channel.Clear();
 
-                        connection.notifyCloseIfNecessary();
+                        //connection.notifyCloseIfNecessary();
 
-                        refreshProxyConnection(connection);
+                        //refreshProxyConnection(connection);
                     }
                 }
 
@@ -401,6 +448,32 @@ namespace Spring.Amqp.Rabbit.Connection
             }
 
             return null;
+        }
+
+        private IModel DoCreateBareChannel(ChannelCachingConnectionProxy connection, bool transactional)
+        {
+            var channel = connection.CreateBareChannel(transactional);
+
+            if (_confirmType != ConfirmType.None)
+            {
+                try
+                {
+                    channel.ConfirmSelect();
+                }
+                catch (IOException ex)
+                {
+                    Logger.LogError(ex, "Could not configure the channel to receive publisher confirms.");
+                }
+            }
+
+            //if ((ConfirmType.CORRELATED.equals(this.confirmType) || this.publisherReturns)
+            //        && !(channel instanceof PublisherCallbackChannelImpl)) {
+            //    channel = this.publisherChannelFactory.createChannel(channel, getChannelsExecutor());
+            //}
+
+            if (channel != null) channel.ModelShutdown += ShutdownCompleted;
+
+            return channel;
         }
 
         private class ChannelCachingConnectionProxy : IConnectionProxy
@@ -411,7 +484,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
             private bool _closeNotified;
             private bool _disposedValue;
-            public volatile IConnection _target;
+            private volatile IConnection _target;
 
             internal ChannelCachingConnectionProxy(CachingConnectionFactory factory, IConnection target)
             {
@@ -422,7 +495,11 @@ namespace Spring.Amqp.Rabbit.Connection
             public event EventHandler<ConnectionBlockedEventArgs> ConnectionBlocked;
             public event EventHandler ConnectionUnblocked;
 
-            public IConnection TargetConnection => _target;
+            public IConnection TargetConnection
+            {
+                get => _target;
+                internal set => _target = value;
+            }
 
             public int LocalPort => _target?.LocalPort ?? 0;
 
@@ -430,7 +507,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
             public override string ToString()
             {
-                return $"Proxy@{GetHashCode().ToString("x", CultureInfo.InvariantCulture)} " +
+                return $"Proxy@{this.GetIdentityHexString()} " +
                     $"{(_factory._cacheMode == CacheMode.Channel ? "Shared" : "Dedicated")} " +
                     $"Rabbit Connection: {_target}";
             }
@@ -448,6 +525,14 @@ namespace Spring.Amqp.Rabbit.Connection
             public void Dispose()
             {
                 Dispose(true);
+            }
+
+            internal IModel CreateBareChannel(bool transactional)
+            {
+                if (_target == null)
+                    throw new InvalidOperationException("Can't create channel - no target connection.");
+
+                return _target.CreateChannel(transactional);
             }
 
             protected virtual void Dispose(bool disposing)
