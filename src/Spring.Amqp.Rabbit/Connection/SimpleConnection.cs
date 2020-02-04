@@ -28,6 +28,12 @@ namespace Spring.Amqp.Rabbit.Connection
             remove => DelegateConnection.ConnectionBlocked -= value;
         }
 
+        public event EventHandler<EventArgs> ConnectionUnblocked
+        {
+            add => DelegateConnection.ConnectionUnblocked += value;
+            remove => DelegateConnection.ConnectionUnblocked -= value;
+        }
+
         public RabbitMQ.Client.IConnection DelegateConnection { get; }
 
         public int LocalPort => DelegateConnection is NetworkConnection ? DelegateConnection.LocalPort : 0;

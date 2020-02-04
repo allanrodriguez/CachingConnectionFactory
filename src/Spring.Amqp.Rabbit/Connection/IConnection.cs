@@ -7,6 +7,7 @@ namespace Spring.Amqp.Rabbit.Connection
     public interface IConnection : IDisposable
     {
         event EventHandler<ConnectionBlockedEventArgs> ConnectionBlocked;
+        event EventHandler<EventArgs> ConnectionUnblocked;
 
         /// <summary>
         /// The local port if the underlying connection supports it.

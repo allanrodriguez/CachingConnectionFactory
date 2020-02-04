@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
-using Spring.Amqp.Rabbit.Events;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -239,8 +239,8 @@ namespace Spring.Amqp.Rabbit.Connection
 
         private void InitCacheWaterMarks()
         {
-            _channelHighWaterMarks.Add(_cachedChannelsNonTransactional.GetIdentityHexString(), 0);
-            _channelHighWaterMarks.Add(_cachedChannelsTransactional.GetIdentityHexString(), 0);
+            _channelHighWaterMarks.TryAdd(_cachedChannelsNonTransactional.GetIdentityHexString(), 0);
+            _channelHighWaterMarks.TryAdd(_cachedChannelsTransactional.GetIdentityHexString(), 0);
         }
 
         private void ShutdownCompleted(object sender, ShutdownEventArgs eventArgs)
@@ -277,7 +277,7 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 try
                 {
-                    channel = GetCachedChannelProxy(connection, channelList, transactional);
+                    //channel = GetCachedChannelProxy(connection, channelList, transactional);
                 }
                 catch (Exception)
                 {
@@ -396,14 +396,14 @@ namespace Spring.Amqp.Rabbit.Connection
             return channelList;
         }
 
-        private IChannelProxy GetCachedChannelProxy(ChannelCachingConnectionProxy connection,
-            LinkedList<IChannelProxy> channelList, bool transactional)
-        {
-            var targetChannel = CreateBareChannel(connection, transactional);
+        //private IChannelProxy GetCachedChannelProxy(ChannelCachingConnectionProxy connection,
+        //    LinkedList<IChannelProxy> channelList, bool transactional)
+        //{
+        //    var targetChannel = CreateBareChannel(connection, transactional);
 
-            if (Logger.IsEnabled(LogLevel.Debug))
-                Logger.LogDebug("Creating cached Rabbit Channel from {targetChannel}.", targetChannel);
-        }
+        //    if (Logger.IsEnabled(LogLevel.Debug))
+        //        Logger.LogDebug("Creating cached Rabbit Channel from {targetChannel}.", targetChannel);
+        //}
 
         private IModel CreateBareChannel(ChannelCachingConnectionProxy connection, bool transactional)
         {
@@ -421,10 +421,11 @@ namespace Spring.Amqp.Rabbit.Connection
                         if (!_connection.IsOpen())
                         {
                             _connection.TargetConnection = null;
-                            CreateConnection();
+                            //CreateConnection();
                         }
                     }
                 }
+
                 return DoCreateBareChannel(_connection, transactional);
             }
             else if (_cacheMode == CacheMode.Channel)
@@ -492,8 +493,49 @@ namespace Spring.Amqp.Rabbit.Connection
                 _target = target;
             }
 
-            public event EventHandler<ConnectionBlockedEventArgs> ConnectionBlocked;
-            public event EventHandler ConnectionUnblocked;
+            #region Events
+
+            public event EventHandler<ConnectionBlockedEventArgs> ConnectionBlocked
+            {
+                add
+                {
+                    if (_target == null)
+                        throw new ArgumentNullException(nameof(ConnectionBlocked),
+                            "Can't add blocked event handler - no target connection.");
+
+                    _target.ConnectionBlocked += value;
+                }
+                remove
+                {
+                    if (_target == null)
+                        throw new ArgumentNullException(nameof(ConnectionBlocked),
+                            "Can't remove blocked event handler - no target connection.");
+
+                    _target.ConnectionBlocked -= value;
+                }
+            }
+
+            public event EventHandler<EventArgs> ConnectionUnblocked
+            {
+                add
+                {
+                    if (_target == null)
+                        throw new ArgumentNullException(nameof(ConnectionUnblocked),
+                            "Can't add unblocked event handler - no target connection.");
+
+                    _target.ConnectionUnblocked += value;
+                }
+                remove
+                {
+                    if (_target == null)
+                        throw new ArgumentNullException(nameof(ConnectionUnblocked),
+                            "Can't remove unblocked event handler - no target connection.");
+
+                    _target.ConnectionUnblocked -= value;
+                }
+            }
+
+            #endregion
 
             public IConnection TargetConnection
             {
