@@ -6,9 +6,7 @@ namespace Spring.Amqp.Rabbit.Connection
     public interface IConnectionFactory
     {
         event EventHandler<IConnection> ConnectionCreated;
-
         event EventHandler<IConnection> ConnectionClosed;
-
         event EventHandler<OperationInterruptedException> ConnectionShutDown;
 
         string Host { get; }
@@ -38,5 +36,7 @@ namespace Spring.Amqp.Rabbit.Connection
         /// Return true if publisher returns are enabled.
         /// </summary>
         bool IsPublisherReturns { get; }
+
+        IConnection CreateConnection();
     }
 }
