@@ -1,4 +1,4 @@
-using RabbitMQ.Client.Exceptions;
+using RabbitMQ.Client;
 using System;
 
 namespace Spring.Amqp.Rabbit.Connection
@@ -7,7 +7,7 @@ namespace Spring.Amqp.Rabbit.Connection
     {
         event EventHandler<IConnection> ConnectionCreated;
         event EventHandler<IConnection> ConnectionClosed;
-        event EventHandler<OperationInterruptedException> ConnectionShutDown;
+        event EventHandler<ShutdownEventArgs> ConnectionShutdown;
 
         string Host { get; }
 

@@ -53,24 +53,24 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
-        public event EventHandler<OperationInterruptedException> ChannelShutDown
+        public event EventHandler<ShutdownEventArgs> ChannelShutdown
         {
             add
             {
                 lock (_lock)
                 {
-                    ChannelShutDownInternal += value;
+                    ChannelShutdownInternal += value;
 
-                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelShutDown += value;
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelShutdown += value;
                 }
             }
             remove
             {
                 lock (_lock)
                 {
-                    ChannelShutDownInternal -= value;
+                    ChannelShutdownInternal -= value;
 
-                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelShutDown -= value;
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelShutdown -= value;
                 }
             }
         }
@@ -119,33 +119,33 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
-        public event EventHandler<OperationInterruptedException> ConnectionShutDown
+        public event EventHandler<ShutdownEventArgs> ConnectionShutdown
         {
             add
             {
                 lock (_lock)
                 {
-                    ConnectionShutDownInternal += value;
+                    ConnectionShutdownInternal += value;
 
-                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionShutDown += value;
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionShutdown += value;
                 }
             }
             remove
             {
                 lock (_lock)
                 {
-                    ConnectionShutDownInternal -= value;
+                    ConnectionShutdownInternal -= value;
 
-                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionShutDown -= value;
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionShutdown -= value;
                 }
             }
         }
 
         private event EventHandler<ChannelCreatedEventArgs> ChannelCreatedInternal;
-        private event EventHandler<OperationInterruptedException> ChannelShutDownInternal;
+        private event EventHandler<ShutdownEventArgs> ChannelShutdownInternal;
         private event EventHandler<IConnection> ConnectionCreatedInternal;
         private event EventHandler<IConnection> ConnectionClosedInternal;
-        private event EventHandler<OperationInterruptedException> ConnectionShutDownInternal;
+        private event EventHandler<ShutdownEventArgs> ConnectionShutdownInternal;
 
         #endregion
 
@@ -237,20 +237,20 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
-        public void SetChannelShutDownHandlers(IEnumerable<EventHandler<OperationInterruptedException>> handlers)
+        public void SetChannelShutDownHandlers(IEnumerable<EventHandler<ShutdownEventArgs>> handlers)
         {
             if (handlers == null) throw new ArgumentNullException(nameof(handlers));
 
             ClearChannelShutDownHandlers();
 
-            foreach (var handler in handlers) ChannelShutDown += handler;
+            foreach (var handler in handlers) ChannelShutdown += handler;
         }
 
         public void ClearChannelShutDownHandlers()
         {
             lock (_lock)
             {
-                ChannelShutDownInternal = null;
+                ChannelShutdownInternal = null;
 
                 if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearChannelShutDownHandlers();
             }
@@ -294,20 +294,20 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
-        public void SetConnectionShutDownHandlers(IEnumerable<EventHandler<OperationInterruptedException>> handlers)
+        public void SetConnectionShutDownHandlers(IEnumerable<EventHandler<ShutdownEventArgs>> handlers)
         {
             if (handlers == null) throw new ArgumentNullException(nameof(handlers));
 
             ClearConnectionShutDownHandlers();
 
-            foreach (var handler in handlers) ConnectionShutDown += handler;
+            foreach (var handler in handlers) ConnectionShutdown += handler;
         }
 
         public void ClearConnectionShutDownHandlers()
         {
             lock (_lock)
             {
-                ConnectionShutDownInternal = null;
+                ConnectionShutdownInternal = null;
 
                 if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearConnectionShutDownHandlers();
             }
