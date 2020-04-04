@@ -11,6 +11,8 @@ namespace Spring.Amqp.Rabbit.Connection
     public abstract class AbstractConnectionFactory : IConnectionFactory, IDisposable
     {
         private const string BadUri = "Uri was passed an invalid URI; it is ignored";
+        
+        private readonly object _lock = new object();
 
         private AbstractConnectionFactory _publisherConnectionFactory;
         private IList<AmqpTcpEndpoint> _addresses;
@@ -27,9 +29,127 @@ namespace Spring.Amqp.Rabbit.Connection
             Logger = loggerFactory.CreateLogger(GetType());
         }
 
-        public event EventHandler<IConnection> ConnectionCreated;
-        public event EventHandler<IConnection> ConnectionClosed;
-        public event EventHandler<OperationInterruptedException> ConnectionShutDown;
+        #region Events
+
+        public event EventHandler<ChannelCreatedEventArgs> ChannelCreated
+        {
+            add
+            {
+                lock (_lock)
+                {
+                    ChannelCreatedInternal += value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelCreated += value;
+                }
+            }
+            remove
+            {
+                lock (_lock)
+                {
+                    ChannelCreatedInternal -= value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelCreated -= value;
+                }
+            }
+        }
+
+        public event EventHandler<OperationInterruptedException> ChannelShutDown
+        {
+            add
+            {
+                lock (_lock)
+                {
+                    ChannelShutDownInternal += value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelShutDown += value;
+                }
+            }
+            remove
+            {
+                lock (_lock)
+                {
+                    ChannelShutDownInternal -= value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelShutDown -= value;
+                }
+            }
+        }
+
+        public event EventHandler<IConnection> ConnectionCreated
+        {
+            add
+            {
+                lock (_lock)
+                {
+                    ConnectionCreatedInternal += value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionCreated += value;
+                }
+            }
+            remove
+            {
+                lock (_lock)
+                {
+                    ConnectionCreatedInternal -= value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionCreated -= value;
+                }
+            }
+        }
+
+        public event EventHandler<IConnection> ConnectionClosed
+        {
+            add
+            {
+                lock (_lock)
+                {
+                    ConnectionClosedInternal += value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionClosed += value;
+                }
+            }
+            remove
+            {
+                lock (_lock)
+                {
+                    ConnectionClosedInternal -= value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionClosed -= value;
+                }
+            }
+        }
+
+        public event EventHandler<OperationInterruptedException> ConnectionShutDown
+        {
+            add
+            {
+                lock (_lock)
+                {
+                    ConnectionShutDownInternal += value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionShutDown += value;
+                }
+            }
+            remove
+            {
+                lock (_lock)
+                {
+                    ConnectionShutDownInternal -= value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionShutDown -= value;
+                }
+            }
+        }
+
+        private event EventHandler<ChannelCreatedEventArgs> ChannelCreatedInternal;
+        private event EventHandler<OperationInterruptedException> ChannelShutDownInternal;
+        private event EventHandler<IConnection> ConnectionCreatedInternal;
+        private event EventHandler<IConnection> ConnectionClosedInternal;
+        private event EventHandler<OperationInterruptedException> ConnectionShutDownInternal;
+
+        #endregion
+
+        #region Properties
 
         public ConnectionFactory RabbitConnectionFactory { get; }
 
@@ -54,7 +174,7 @@ namespace Spring.Amqp.Rabbit.Connection
             set => RabbitConnectionFactory.VirtualHost = value;
         }
 
-        public string Username
+        public string UserName
         {
             get => RabbitConnectionFactory.UserName;
             set => RabbitConnectionFactory.UserName = value;
@@ -82,17 +202,125 @@ namespace Spring.Amqp.Rabbit.Connection
             set => RabbitConnectionFactory.RequestedHeartbeat = value;
         }
 
+        public int RequestedConnectionTimeout
+        {
+            get => RabbitConnectionFactory.RequestedConnectionTimeout;
+            set => RabbitConnectionFactory.RequestedConnectionTimeout = value;
+        }
+
         public IConnectionFactory PublisherConnectionFactory => _publisherConnectionFactory;
 
-        public bool IsSimplePublisherConfirms => throw new NotImplementedException();
+        public bool IsSimplePublisherConfirms => false;
 
-        public bool IsPublisherConfirms => throw new NotImplementedException();
+        public bool IsPublisherConfirms => false;
 
-        public bool IsPublisherReturns => throw new NotImplementedException();
+        public bool IsPublisherReturns => false;
+
+        #endregion
+
+        public void SetChannelCreatedHandlers(IEnumerable<EventHandler<ChannelCreatedEventArgs>> handlers)
+        {
+            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
+
+            ClearChannelCreatedHandlers();
+
+            foreach (var handler in handlers) ChannelCreated += handler;
+        }
+
+        public void ClearChannelCreatedHandlers()
+        {
+            lock (_lock)
+            {
+                ChannelCreatedInternal = null;
+
+                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearChannelCreatedHandlers();
+            }
+        }
+
+        public void SetChannelShutDownHandlers(IEnumerable<EventHandler<OperationInterruptedException>> handlers)
+        {
+            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
+
+            ClearChannelShutDownHandlers();
+
+            foreach (var handler in handlers) ChannelShutDown += handler;
+        }
+
+        public void ClearChannelShutDownHandlers()
+        {
+            lock (_lock)
+            {
+                ChannelShutDownInternal = null;
+
+                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearChannelShutDownHandlers();
+            }
+        }
+
+        public void SetConnectionCreatedHandlers(IEnumerable<EventHandler<IConnection>> handlers)
+        {
+            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
+
+            ClearConnectionCreatedHandlers();
+
+            foreach (var handler in handlers) ConnectionCreated += handler;
+        }
+
+        public void ClearConnectionCreatedHandlers()
+        {
+            lock (_lock)
+            {
+                ConnectionCreatedInternal = null;
+
+                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearConnectionCreatedHandlers();
+            }
+        }
+
+        public void SetConnectionClosedHandlers(IEnumerable<EventHandler<IConnection>> handlers)
+        {
+            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
+
+            ClearConnectionClosedHandlers();
+
+            foreach (var handler in handlers) ConnectionClosed += handler;
+        }
+
+        public void ClearConnectionClosedHandlers()
+        {
+            lock (_lock)
+            {
+                ConnectionClosedInternal = null;
+
+                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearConnectionClosedHandlers();
+            }
+        }
+
+        public void SetConnectionShutDownHandlers(IEnumerable<EventHandler<OperationInterruptedException>> handlers)
+        {
+            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
+
+            ClearConnectionShutDownHandlers();
+
+            foreach (var handler in handlers) ConnectionShutDown += handler;
+        }
+
+        public void ClearConnectionShutDownHandlers()
+        {
+            lock (_lock)
+            {
+                ConnectionShutDownInternal = null;
+
+                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearConnectionShutDownHandlers();
+            }
+        }
 
         public IConnection CreateConnection()
         {
             throw new NotImplementedException();
+        }
+
+        public void SetPassword(string password)
+        {
+            RabbitConnectionFactory.Password = password;
         }
 
         public void SetAddresses(string addresses)
@@ -110,8 +338,7 @@ namespace Spring.Amqp.Rabbit.Connection
                 }
             }
 
-            Logger.LogInformation("setAddresses() called with an empty value, will be using the host+port " +
-                    "properties for connections");
+            Logger.LogInformation("SetAddresses() called with an empty value, will be using the host+port properties for connections");
             _addresses = null;
         }
 
@@ -128,7 +355,7 @@ namespace Spring.Amqp.Rabbit.Connection
             try
             {
                 temp = Dns.GetHostName();
-                Logger.LogDebug($"Using hostname [{temp}] for hostname.");
+                Logger.LogDebug("Using hostname [{temp}] for hostname.", temp);
             }
             catch (SocketException ex)
             {

@@ -15,7 +15,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
         string VirtualHost { get; }
 
-        string Username { get; }
+        string UserName { get; }
 
         /// <summary>
         /// Returns a separate connection factory for publishers.
