@@ -1,25 +1,44 @@
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
-using RabbitMQ.Client.Exceptions;
+using RabbitMQ.Client.Framing.Impl;
+using Spring.Amqp.Rabbit.Support;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 
 namespace Spring.Amqp.Rabbit.Connection
 {
     public abstract class AbstractConnectionFactory : IConnectionFactory, IDisposable
     {
+        public const int DefaultCloseTimeout = 30000;
+
         private const string BadUri = "Uri was passed an invalid URI; it is ignored";
-        
+        private const string PublisherSuffix = ".publish";
+
         private readonly object _lock = new object();
 
-        private AbstractConnectionFactory _publisherConnectionFactory;
         private IList<AmqpTcpEndpoint> _addresses;
+        private int _closeTimeout = DefaultCloseTimeout;
+        private ConnectionNameStrategy _connectionNameStrategy;
+        private int _defaultConnectionNameStrategyCounter;
         private bool _disposed;
+        private AbstractConnectionFactory _publisherConnectionFactory;
+        private bool _shuffleAddresses;
 
         public AbstractConnectionFactory(ConnectionFactory rabbitConnectionFactory)
         {
+            _connectionNameStrategy =
+                connectionFactory =>
+                    $"SpringAMQP#{this.GetIdentityHexString()}:{Interlocked.Increment(ref _defaultConnectionNameStrategyCounter) - 1}";
+
+            RecoverySucceededInternal += (sender, e) =>
+            {
+                if (Logger.IsEnabled(LogLevel.Debug)) Logger.LogDebug("Connection recovery started.");
+            };
+
             RabbitConnectionFactory = rabbitConnectionFactory ??
                 throw new ArgumentNullException(nameof(rabbitConnectionFactory),
                     "Target ConnectionFactory must not be null");
@@ -146,6 +165,7 @@ namespace Spring.Amqp.Rabbit.Connection
         private event EventHandler<IConnection> ConnectionCreatedInternal;
         private event EventHandler<IConnection> ConnectionClosedInternal;
         private event EventHandler<ShutdownEventArgs> ConnectionShutdownInternal;
+        private event EventHandler RecoverySucceededInternal;
 
         #endregion
 
@@ -208,7 +228,20 @@ namespace Spring.Amqp.Rabbit.Connection
             set => RabbitConnectionFactory.RequestedConnectionTimeout = value;
         }
 
+        public int CloseTimeout
+        {
+            get => _closeTimeout;
+            set
+            {
+                _closeTimeout = value;
+
+                if (_publisherConnectionFactory != null) _publisherConnectionFactory.CloseTimeout = value;
+            }
+        }
+
         public IConnectionFactory PublisherConnectionFactory => _publisherConnectionFactory;
+
+        public bool HasPublisherConnectionFactory => _publisherConnectionFactory != null;
 
         public bool IsSimplePublisherConfirms => false;
 
@@ -217,6 +250,8 @@ namespace Spring.Amqp.Rabbit.Connection
         public bool IsPublisherReturns => false;
 
         #endregion
+
+        #region Methods
 
         public void SetChannelCreatedHandlers(IEnumerable<EventHandler<ChannelCreatedEventArgs>> handlers)
         {
@@ -313,6 +348,29 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
+        public void SetRecoverySucceededHandler(EventHandler handler)
+        {
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
+
+            lock (_lock) RecoverySucceededInternal = handler;
+
+            if (_publisherConnectionFactory != null) _publisherConnectionFactory.SetRecoverySucceededHandler(handler);
+        }
+
+        public void SetConnectionNameStrategy(ConnectionNameStrategy connectionNameStrategy)
+        {
+            _connectionNameStrategy = connectionNameStrategy;
+
+            if (_publisherConnectionFactory != null)
+                _publisherConnectionFactory.SetConnectionNameStrategy(connectionFactory =>
+                    $"{connectionNameStrategy(connectionFactory)}{PublisherSuffix}");
+        }
+
+        public void SetShuffleAddresses(bool shuffleAddresses)
+        {
+            _shuffleAddresses = shuffleAddresses;
+        }
+
         public IConnection CreateConnection()
         {
             throw new NotImplementedException();
@@ -348,6 +406,46 @@ namespace Spring.Amqp.Rabbit.Connection
             GC.SuppressFinalize(this);
         }
 
+        protected IConnection CreateBareConnection()
+        {
+            try
+            {
+                var connectionName = _connectionNameStrategy(this);
+
+                var rabbitConnection = Connect(connectionName);
+
+                var connection = new SimpleConnection(rabbitConnection, _closeTimeout);
+
+                if (rabbitConnection is AutorecoveringConnection autorecoveringConnection)
+                {
+                    autorecoveringConnection.RecoverySucceeded += (sender, args) =>
+                    {
+                        try
+                        {
+                            connection.Dispose();
+                        }
+                        catch (Exception e)
+                        {
+                            Logger.LogError(e, "Failed to close auto-recover connection");
+                        }
+                    };
+
+                    autorecoveringConnection.RecoverySucceeded +=
+                        (sender, e) => RecoverySucceededInternal?.Invoke(sender, e);
+                }
+
+                if (Logger.IsEnabled(LogLevel.Information))
+                    Logger.LogInformation("Created new connection: {connectionName}/{connection}", connectionName,
+                        connection);
+
+                return connection;
+            }
+            catch (IOException e)
+            {
+                throw RabbitExceptionTranslator.ConvertRabbitAccessException(e);
+            }
+        }
+
         protected string GetDefaultHostName()
         {
             string temp;
@@ -378,6 +476,54 @@ namespace Spring.Amqp.Rabbit.Connection
             if (disposing && _publisherConnectionFactory != null) _publisherConnectionFactory.Dispose();
 
             _disposed = true;
+        }
+
+        private RabbitMQ.Client.IConnection Connect(string connectionName)
+        {
+            RabbitMQ.Client.IConnection rabbitConnection;
+
+            if (_addresses != null)
+            {
+                var addressesToConnect = _addresses;
+
+                if (_shuffleAddresses && _addresses.Count > 1)
+                {
+                    var list = new List<AmqpTcpEndpoint>(addressesToConnect);
+                    list.Shuffle();
+                    addressesToConnect = list;
+                }
+
+                if (Logger.IsEnabled(LogLevel.Information))
+                    Logger.LogInformation("Attempting to connect to: {addressesToConnect}", addressesToConnect);
+
+                var resolver = new EndpointResolver(addressesToConnect);
+
+                rabbitConnection = RabbitConnectionFactory.CreateConnection(resolver, connectionName);
+            }
+            else
+            {
+                if (Logger.IsEnabled(LogLevel.Information))
+                    Logger.LogInformation("Attempting to connect to: {host}:{port}", RabbitConnectionFactory.HostName,
+                        RabbitConnectionFactory.Port);
+
+                rabbitConnection = RabbitConnectionFactory.CreateConnection(connectionName);
+            }
+
+            return rabbitConnection;
+        }
+
+        #endregion
+
+        private class EndpointResolver : IEndpointResolver
+        {
+            private readonly IEnumerable<AmqpTcpEndpoint> _endpoints;
+
+            public EndpointResolver(IEnumerable<AmqpTcpEndpoint> endpoints)
+            {
+                _endpoints = endpoints;
+            }
+
+            public IEnumerable<AmqpTcpEndpoint> All() => _endpoints;
         }
     }
 }

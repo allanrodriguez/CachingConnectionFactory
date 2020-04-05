@@ -36,7 +36,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
         public RabbitMQ.Client.IConnection DelegateConnection { get; }
 
-        public int LocalPort => DelegateConnection is NetworkConnection ? DelegateConnection.LocalPort : 0;
+        public int LocalPort => DelegateConnection.LocalPort;
 
         public int RemotePort => DelegateConnection.RemotePort;
 
@@ -74,8 +74,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
         public override string ToString()
         {
-            return $"{nameof(SimpleConnection)}@{this.GetIdentityHexString()} " +
-                $"[delegate={DelegateConnection}, local port={LocalPort}]";
+            return $"{nameof(SimpleConnection)}@{this.GetIdentityHexString()} [delegate={DelegateConnection}, local port={LocalPort}]";
         }
 
         protected virtual void Dispose(bool disposing)
