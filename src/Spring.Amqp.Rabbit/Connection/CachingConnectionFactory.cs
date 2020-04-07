@@ -263,13 +263,6 @@ namespace Spring.Amqp.Rabbit.Connection
                 _publisherConnectionFactory.SetChannelCheckoutTimeout(channelCheckoutTimeout);
         }
 
-        public override void SetConnectionCreatedHandlers(IEnumerable<EventHandler<IConnection>> handlers)
-        {
-            base.SetConnectionCreatedHandlers(handlers);
-
-            if (_connection.TargetConnection != null) OnConnectionCreated(_connection.TargetConnection);
-        }
-
         /// <summary>
         /// Use full (correlated) publisher confirms, with correlation data and a callback for each message.
         /// </summary>

@@ -36,7 +36,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
             RecoverySucceededInternal += (sender, e) =>
             {
-                if (Logger.IsEnabled(LogLevel.Debug)) Logger.LogDebug("Connection recovery started.");
+                if (Logger.IsEnabled(LogLevel.Debug)) Logger.LogDebug("Connection recovery succeeded.");
             };
 
             RabbitConnectionFactory = rabbitConnectionFactory ??
@@ -160,6 +160,28 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
+        public event EventHandler RecoverySucceeded
+        {
+            add
+            {
+                lock (_lock)
+                {
+                    RecoverySucceededInternal += value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.RecoverySucceeded += value;
+                }
+            }
+            remove
+            {
+                lock (_lock)
+                {
+                    RecoverySucceededInternal -= value;
+
+                    if (_publisherConnectionFactory != null) _publisherConnectionFactory.RecoverySucceeded -= value;
+                }
+            }
+        }
+
         private event EventHandler<ChannelCreatedEventArgs> ChannelCreatedInternal;
         private event EventHandler<ShutdownEventArgs> ChannelShutdownInternal;
         private event EventHandler<IConnection> ConnectionCreatedInternal;
@@ -252,110 +274,6 @@ namespace Spring.Amqp.Rabbit.Connection
         #endregion
 
         #region Methods
-
-        public void SetChannelCreatedHandlers(IEnumerable<EventHandler<ChannelCreatedEventArgs>> handlers)
-        {
-            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
-
-            ClearChannelCreatedHandlers();
-
-            foreach (var handler in handlers) ChannelCreated += handler;
-        }
-
-        public void ClearChannelCreatedHandlers()
-        {
-            lock (_lock)
-            {
-                ChannelCreatedInternal = null;
-
-                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearChannelCreatedHandlers();
-            }
-        }
-
-        public void SetChannelShutDownHandlers(IEnumerable<EventHandler<ShutdownEventArgs>> handlers)
-        {
-            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
-
-            ClearChannelShutDownHandlers();
-
-            foreach (var handler in handlers) ChannelShutdown += handler;
-        }
-
-        public void ClearChannelShutDownHandlers()
-        {
-            lock (_lock)
-            {
-                ChannelShutdownInternal = null;
-
-                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearChannelShutDownHandlers();
-            }
-        }
-
-        public virtual void SetConnectionCreatedHandlers(IEnumerable<EventHandler<IConnection>> handlers)
-        {
-            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
-
-            ClearConnectionCreatedHandlers();
-
-            foreach (var handler in handlers) ConnectionCreated += handler;
-        }
-
-        public void ClearConnectionCreatedHandlers()
-        {
-            lock (_lock)
-            {
-                ConnectionCreatedInternal = null;
-
-                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearConnectionCreatedHandlers();
-            }
-        }
-
-        public virtual void SetConnectionClosedHandlers(IEnumerable<EventHandler<IConnection>> handlers)
-        {
-            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
-
-            ClearConnectionClosedHandlers();
-
-            foreach (var handler in handlers) ConnectionClosed += handler;
-        }
-
-        public void ClearConnectionClosedHandlers()
-        {
-            lock (_lock)
-            {
-                ConnectionClosedInternal = null;
-
-                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearConnectionClosedHandlers();
-            }
-        }
-
-        public virtual void SetConnectionShutDownHandlers(IEnumerable<EventHandler<ShutdownEventArgs>> handlers)
-        {
-            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
-
-            ClearConnectionShutDownHandlers();
-
-            foreach (var handler in handlers) ConnectionShutdown += handler;
-        }
-
-        public void ClearConnectionShutDownHandlers()
-        {
-            lock (_lock)
-            {
-                ConnectionShutdownInternal = null;
-
-                if (_publisherConnectionFactory != null) _publisherConnectionFactory.ClearConnectionShutDownHandlers();
-            }
-        }
-
-        public void SetRecoverySucceededHandler(EventHandler handler)
-        {
-            if (handler == null) throw new ArgumentNullException(nameof(handler));
-
-            lock (_lock) RecoverySucceededInternal = handler;
-
-            if (_publisherConnectionFactory != null) _publisherConnectionFactory.SetRecoverySucceededHandler(handler);
-        }
 
         public void SetConnectionNameStrategy(ConnectionNameStrategy connectionNameStrategy)
         {
@@ -465,6 +383,20 @@ namespace Spring.Amqp.Rabbit.Connection
             return temp;
         }
 
+        protected virtual void OnChannelCreated(ChannelCreatedEventArgs e)
+        {
+            var handler = ChannelCreatedInternal;
+
+            handler?.Invoke(this, e);
+        }
+
+        protected virtual void OnChannelShutdown(ShutdownEventArgs e)
+        {
+            var handler = ChannelShutdownInternal;
+
+            handler?.Invoke(this, e);
+        }
+
         protected virtual void OnConnectionCreated(IConnection connection)
         {
             var handler = ConnectionCreatedInternal;
@@ -477,6 +409,20 @@ namespace Spring.Amqp.Rabbit.Connection
             var handler = ConnectionClosedInternal;
 
             handler?.Invoke(this, connection);
+        }
+
+        protected virtual void OnConnectionShutdown(ShutdownEventArgs e)
+        {
+            var handler = ConnectionShutdownInternal;
+
+            handler?.Invoke(this, e);
+        }
+
+        protected virtual void OnRecoverySucceeded()
+        {
+            var handler = RecoverySucceededInternal;
+
+            handler?.Invoke(this, EventArgs.Empty);
         }
 
         protected void SetPublisherConnectionFactory(AbstractConnectionFactory publisherConnectionFactory)
