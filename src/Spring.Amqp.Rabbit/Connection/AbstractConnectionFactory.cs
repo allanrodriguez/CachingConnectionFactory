@@ -243,11 +243,11 @@ namespace Spring.Amqp.Rabbit.Connection
 
         public bool HasPublisherConnectionFactory => _publisherConnectionFactory != null;
 
-        public bool IsSimplePublisherConfirms => false;
+        public virtual bool IsSimplePublisherConfirms => false;
 
-        public bool IsPublisherConfirms => false;
+        public virtual bool IsPublisherConfirms => false;
 
-        public bool IsPublisherReturns => false;
+        public virtual bool IsPublisherReturns => false;
 
         #endregion
 
@@ -291,7 +291,7 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
-        public void SetConnectionCreatedHandlers(IEnumerable<EventHandler<IConnection>> handlers)
+        public virtual void SetConnectionCreatedHandlers(IEnumerable<EventHandler<IConnection>> handlers)
         {
             if (handlers == null) throw new ArgumentNullException(nameof(handlers));
 
@@ -310,7 +310,7 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
-        public void SetConnectionClosedHandlers(IEnumerable<EventHandler<IConnection>> handlers)
+        public virtual void SetConnectionClosedHandlers(IEnumerable<EventHandler<IConnection>> handlers)
         {
             if (handlers == null) throw new ArgumentNullException(nameof(handlers));
 
@@ -329,7 +329,7 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
-        public void SetConnectionShutDownHandlers(IEnumerable<EventHandler<ShutdownEventArgs>> handlers)
+        public virtual void SetConnectionShutDownHandlers(IEnumerable<EventHandler<ShutdownEventArgs>> handlers)
         {
             if (handlers == null) throw new ArgumentNullException(nameof(handlers));
 
@@ -371,10 +371,7 @@ namespace Spring.Amqp.Rabbit.Connection
             _shuffleAddresses = shuffleAddresses;
         }
 
-        public IConnection CreateConnection()
-        {
-            throw new NotImplementedException();
-        }
+        public abstract IConnection CreateConnection();
 
         public void SetPassword(string password)
         {
@@ -430,8 +427,12 @@ namespace Spring.Amqp.Rabbit.Connection
                         }
                     };
 
-                    autorecoveringConnection.RecoverySucceeded +=
-                        (sender, e) => RecoverySucceededInternal?.Invoke(sender, e);
+                    autorecoveringConnection.RecoverySucceeded += (sender, e) =>
+                    {
+                        var handler = RecoverySucceededInternal;
+
+                        handler?.Invoke(sender, e);
+                    };
                 }
 
                 if (Logger.IsEnabled(LogLevel.Information))
@@ -462,6 +463,20 @@ namespace Spring.Amqp.Rabbit.Connection
             }
 
             return temp;
+        }
+
+        protected virtual void OnConnectionCreated(IConnection connection)
+        {
+            var handler = ConnectionCreatedInternal;
+
+            handler?.Invoke(this, connection);
+        }
+
+        protected virtual void OnConnectionClosed(IConnection connection)
+        {
+            var handler = ConnectionClosedInternal;
+
+            handler?.Invoke(this, connection);
         }
 
         protected void SetPublisherConnectionFactory(AbstractConnectionFactory publisherConnectionFactory)

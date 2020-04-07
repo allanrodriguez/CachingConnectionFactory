@@ -18,6 +18,28 @@ namespace Spring.Amqp.Rabbit.Connection
         private const int ChannelExecShutdownTimeout = 30;
         private const int DefaultChannelCacheSize = 25;
         private const string DefaultDeferredPoolPrefix = "spring-rabbit-deferred-pool-";
+        private const string Unused = "unused";
+
+        private static readonly ISet<string> AckMethods = new HashSet<string>
+        {
+            "basicAck",
+            "basicNack",
+            "basicReject"
+        };
+
+        private static readonly ISet<string> TxEnds = new HashSet<string>
+        {
+            "txCommit",
+            "txRollback"
+        };
+
+        private static readonly ISet<string> TxStarts = new HashSet<string>
+        {
+            "basicPublish",
+            "basicAck",
+            "basicNack",
+            "basicReject"
+        };
 
         private static int _threadPoolId;
 
@@ -39,7 +61,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
         private int _connectionHighWaterMark;
         private int _channelCheckoutTimeout;
-        private CacheMode _cacheMode = CacheMode.Channel;
+        private FactoryCacheMode _cacheMode = FactoryCacheMode.Channel;
         private int _channelCacheSize = DefaultChannelCacheSize;
         private int _connectionCacheSize = 1;
         private int _connectionLimit = int.MaxValue;
@@ -80,7 +102,7 @@ namespace Spring.Amqp.Rabbit.Connection
         {
             _connection = new ChannelCachingConnectionProxy(this, null);
 
-            SetUri(uri);
+            Uri = uri;
 
             _publisherConnectionFactory = new CachingConnectionFactory(RabbitConnectionFactory, true);
             SetPublisherConnectionFactory(_publisherConnectionFactory);
@@ -123,6 +145,44 @@ namespace Spring.Amqp.Rabbit.Connection
 
         #endregion
 
+        #region Enums
+
+        /// <summary>
+        /// The type of publisher confirms to use.
+        /// </summary>
+        public enum ConfirmType
+        {
+            /// <summary>
+            /// Publisher confirms are disabled (default).
+            /// </summary>
+            None,
+
+            /// <summary>
+            /// Use WaitForConfirmsOrDie within scoped operations.
+            /// </summary>
+            Simple,
+
+            /// <summary>
+            /// Use with CorrelationData to correlate confirmations with sent messsages.
+            /// </summary>
+            Correlated
+        }
+
+        public enum FactoryCacheMode
+        {
+            /// <summary>
+            /// Cache channels - single connection.
+            /// </summary>
+            Channel,
+
+            /// <summary>
+            /// Cache connections and channels within each connection.
+            /// </summary>
+            Connection
+        }
+
+        #endregion
+
         public int ChannelCacheSize
         {
             get => _channelCacheSize;
@@ -138,13 +198,13 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
-        public CacheMode CacheMode
+        public FactoryCacheMode CacheMode
         {
             get => _cacheMode;
             set
             {
                 if (_initialized)
-                    throw new InvalidOperationException("'cacheMode' cannot be changed after initialization.");
+                    throw new InvalidOperationException($"'{nameof(CacheMode)}' cannot be changed after initialization.");
 
                 _cacheMode = value;
 
@@ -167,19 +227,18 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
-        public bool PublisherConfirms => _confirmType == ConfirmType.Correlated;
+        public override bool IsPublisherConfirms => _confirmType == ConfirmType.Correlated;
 
-        public bool PublisherReturns
-        {
-            get => _publisherReturns;
-            set
-            {
-                _publisherReturns = value;
+        public override bool IsPublisherReturns => _publisherReturns;
 
-                if (_publisherConnectionFactory != null) _publisherConnectionFactory.PublisherReturns = value;
-            }
-        }
+        public override bool IsSimplePublisherConfirms => _confirmType == ConfirmType.Simple;
 
+        /// <summary>
+        /// Set the connection limit when using cache mode Connection. When the limit is reached and there are no idle
+        /// connections, the <see cref="SetChannelCheckoutTimeout(int)"/> is used to wait for a connection to become
+        /// idle.
+        /// </summary>
+        /// <param name="connectionLimit">The limit.</param>
         public void SetConnectionLimit(int connectionLimit)
         {
             if (connectionLimit < 1)
@@ -190,6 +249,12 @@ namespace Spring.Amqp.Rabbit.Connection
             if (_publisherConnectionFactory != null) _publisherConnectionFactory.SetConnectionLimit(connectionLimit);
         }
 
+        /// <summary>
+        /// Sets the channel checkout timeout.
+        /// </summary>
+        /// <param name="channelCheckoutTimeout">
+        /// The timeout in milliseconds; default 0 (channel limiting not enabled).
+        /// </param>
         public void SetChannelCheckoutTimeout(int channelCheckoutTimeout)
         {
             _channelCheckoutTimeout = channelCheckoutTimeout;
@@ -198,11 +263,70 @@ namespace Spring.Amqp.Rabbit.Connection
                 _publisherConnectionFactory.SetChannelCheckoutTimeout(channelCheckoutTimeout);
         }
 
+        public override void SetConnectionCreatedHandlers(IEnumerable<EventHandler<IConnection>> handlers)
+        {
+            base.SetConnectionCreatedHandlers(handlers);
+
+            if (_connection.TargetConnection != null) OnConnectionCreated(_connection.TargetConnection);
+        }
+
+        /// <summary>
+        /// Use full (correlated) publisher confirms, with correlation data and a callback for each message.
+        /// </summary>
+        /// <param name="publisherReturns">True for full publisher returns.</param>
+        [Obsolete("Deprecated in favor of SetPublisherConfirmType(ConfirmType).")]
+        public void SetPublisherConfirms(bool publisherConfirms)
+        {
+            if (publisherConfirms && _confirmType == ConfirmType.Simple)
+                throw new ArgumentOutOfRangeException(nameof(publisherConfirms),
+                    "Cannot set both publisher confirms and simple publisher confirms.");
+
+            if (publisherConfirms)
+                SetPublisherConfirmType(ConfirmType.Correlated);
+            else if (_confirmType == ConfirmType.Correlated)
+                SetPublisherConfirmType(ConfirmType.None);
+        }
+
+        /// <summary>
+        /// Use simple publisher confirms where the template simply waits for completion.
+        /// </summary>
+        /// <param name="simplePublisherConfirms">True for confirms.</param>
+        [Obsolete("Deprecated in favor of SetPublisherConfirmType(ConfirmType).")]
+        public void SetSimplePublisherConfirms(bool simplePublisherConfirms)
+        {
+            if (simplePublisherConfirms && _confirmType == ConfirmType.Correlated)
+                throw new ArgumentOutOfRangeException(nameof(simplePublisherConfirms),
+                    "Cannot set both publisher confirms and simple publisher confirms.");
+
+            if (simplePublisherConfirms)
+                SetPublisherConfirmType(ConfirmType.Simple);
+            else if (_confirmType == ConfirmType.Simple)
+                SetPublisherConfirmType(ConfirmType.None);
+        }
+
+        /// <summary>
+        /// Set the confirm type to use; default None.
+        /// </summary>
+        /// <param name="confirmType">The confirm type.</param>
+        public void SetPublisherConfirmType(ConfirmType confirmType)
+        {
+            _confirmType = confirmType;
+
+            if (_publisherConnectionFactory != null) _publisherConnectionFactory.SetPublisherConfirmType(confirmType);
+        }
+
+        public void SetPublisherReturns(bool publisherReturns)
+        {
+            _publisherReturns = publisherReturns;
+
+            if (_publisherConnectionFactory != null) _publisherConnectionFactory.SetPublisherReturns(publisherReturns);
+        }
+
         public void AfterPropertiesSet()
         {
             _initialized = true;
 
-            if (_cacheMode == CacheMode.Channel && _connectionCacheSize != 1)
+            if (_cacheMode == FactoryCacheMode.Channel && _connectionCacheSize != 1)
                 throw new InvalidOperationException("When the cache mode is 'Channel', the connection cache size cannot be configured.");
 
             InitCacheWaterMarks();
@@ -380,8 +504,8 @@ namespace Spring.Amqp.Rabbit.Connection
         {
             var channelList = (_cacheMode, transactional) switch
             {
-                (CacheMode.Channel, true) => _cachedChannelsTransactional,
-                (CacheMode.Channel, false) => _cachedChannelsNonTransactional,
+                (FactoryCacheMode.Channel, true) => _cachedChannelsTransactional,
+                (FactoryCacheMode.Channel, false) => _cachedChannelsNonTransactional,
                 (_, true) => _allocatedConnectionTransactionalChannels.TryGetValue(connection, out var result)
                              ? result
                              : null,
@@ -407,7 +531,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
         private IModel CreateBareChannel(ChannelCachingConnectionProxy connection, bool transactional)
         {
-            if (_cacheMode == CacheMode.Channel)
+            if (_cacheMode == FactoryCacheMode.Channel)
             {
                 if (!_connection.IsOpen())
                 {
@@ -428,7 +552,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
                 return DoCreateBareChannel(_connection, transactional);
             }
-            else if (_cacheMode == CacheMode.Channel)
+            else if (_cacheMode == FactoryCacheMode.Channel)
             {
                 if (!connection.IsOpen())
                 {
@@ -475,6 +599,11 @@ namespace Spring.Amqp.Rabbit.Connection
             if (channel != null) channel.ModelShutdown += ShutdownCompleted;
 
             return channel;
+        }
+
+        public override IConnection CreateConnection()
+        {
+            throw new NotImplementedException();
         }
 
         private class ChannelCachingConnectionProxy : IConnectionProxy
@@ -550,7 +679,7 @@ namespace Spring.Amqp.Rabbit.Connection
             public override string ToString()
             {
                 return $"Proxy@{this.GetIdentityHexString()} " +
-                    $"{(_factory._cacheMode == CacheMode.Channel ? "Shared" : "Dedicated")} " +
+                    $"{(_factory._cacheMode == FactoryCacheMode.Channel ? "Shared" : "Dedicated")} " +
                     $"Rabbit Connection: {_target}";
             }
 
