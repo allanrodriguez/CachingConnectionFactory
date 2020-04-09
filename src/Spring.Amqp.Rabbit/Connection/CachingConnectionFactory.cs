@@ -381,9 +381,52 @@ namespace Spring.Amqp.Rabbit.Connection
             if (_publisherConnectionFactory != null) _publisherConnectionFactory.ResetConnection();
         }
 
+        protected void CloseAndClear(ICollection<IChannelProxy> channels)
+        {
+            if (channels == null) throw new ArgumentNullException(nameof(channels));
+
+            lock (channels)
+            {
+                CloseChannels(channels);
+                channels.Clear();
+            }
+        }
+
+        protected void CloseChannels(ICollection<IChannelProxy> channels)
+        {
+            if (channels == null) throw new ArgumentNullException(nameof(channels));
+
+            foreach (var channel in channels)
+            {
+                try
+                {
+                    channel.Close();
+                }
+                catch (Exception e)
+                {
+                    Logger.LogTrace(e, "Could not close cached Rabbit Channel");
+                }
+            }
+        }
+
         protected override void Dispose(bool disposing)
         {
             base.Dispose(disposing);
+        }
+
+        protected void Reset(ICollection<IChannelProxy> channels, ICollection<IChannelProxy> txChannels,
+            IDictionary<IModel, IChannelProxy> channelsAwaitingAcks)
+        {
+            if (channels == null) throw new ArgumentNullException(nameof(channels));
+            if (txChannels == null) throw new ArgumentNullException(nameof(txChannels));
+            if (channelsAwaitingAcks == null) throw new ArgumentNullException(nameof(channelsAwaitingAcks));
+
+            _active = false;
+            CloseAndClear(channels);
+            CloseAndClear(txChannels);
+            CloseChannels(channelsAwaitingAcks.Values);
+            channelsAwaitingAcks.Clear();
+            _active = true;
         }
 
         private static ConnectionFactory NewRabbitConnectionFactory()
@@ -642,7 +685,7 @@ namespace Spring.Amqp.Rabbit.Connection
                 = new ConcurrentDictionary<IModel, IChannelProxy>();
             private readonly CachingConnectionFactory _factory;
 
-            private bool _closeNotified;
+            private int _closeNotified;
             private bool _disposedValue;
             private volatile IConnection _target;
 
@@ -696,6 +739,8 @@ namespace Spring.Amqp.Rabbit.Connection
 
             #endregion
 
+            #region Properties
+
             public IConnection TargetConnection
             {
                 get => _target;
@@ -705,6 +750,8 @@ namespace Spring.Amqp.Rabbit.Connection
             public int LocalPort => _target?.LocalPort ?? 0;
 
             public RabbitMQ.Client.IConnection DelegateConnection => _target.DelegateConnection;
+
+            #endregion
 
             public override string ToString()
             {
@@ -722,8 +769,22 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 if (_factory._cacheMode == FactoryCacheMode.Channel)
                 {
-                    // TODO: Finish
+                    _factory.Reset(_factory._cachedChannelsNonTransactional, _factory._cachedChannelsTransactional,
+                        _channelsAwaitingAcks);
                 }
+                else if (_factory._allocatedConnectionNonTransactionalChannels.TryGetValue(this, out var channels) &&
+                         _factory._allocatedConnectionTransactionalChannels.TryGetValue(this, out var txChannels))
+                {
+                    _factory.Reset(channels, txChannels, _channelsAwaitingAcks);
+                }
+
+                if (_target != null)
+                {
+                    RabbitUtils.CloseConnection(_target);
+                    NotifyCloseIfNecessary();
+                }
+
+                _target = null;
             }
 
             public void Dispose()
@@ -771,6 +832,8 @@ namespace Spring.Amqp.Rabbit.Connection
                     {
                         if (_factory.Logger.IsEnabled(LogLevel.Debug))
                             _factory.Logger.LogDebug("Completely closing connection '{connection}'.", this);
+
+                        Close();
                     }
 
                     if (_factory.Logger.IsEnabled(LogLevel.Debug))
@@ -781,6 +844,11 @@ namespace Spring.Amqp.Rabbit.Connection
                     if (_factory._connectionHighWaterMark < _factory._idleConnections.Count)
                         Interlocked.Exchange(ref _factory._connectionHighWaterMark, _factory._idleConnections.Count);
                 }
+            }
+
+            private void NotifyCloseIfNecessary()
+            {
+                if (Interlocked.Exchange(ref _closeNotified, 1) == 0) _factory.OnConnectionClosed(this);
             }
         }
     }
