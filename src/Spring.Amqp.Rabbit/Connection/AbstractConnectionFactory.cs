@@ -27,6 +27,12 @@ namespace Spring.Amqp.Rabbit.Connection
         private bool _disposed;
         private AbstractConnectionFactory _publisherConnectionFactory;
         private bool _shuffleAddresses;
+        private EventHandler<ChannelCreatedEventArgs> _channelCreatedInternal;
+        private EventHandler<ShutdownEventArgs> _channelShutdownInternal;
+        private EventHandler<IConnection> _connectionCreatedInternal;
+        private EventHandler<IConnection> _connectionClosedInternal;
+        private EventHandler<ShutdownEventArgs> _connectionShutdownInternal;
+        private EventHandler _recoverySucceededInternal;
 
         public AbstractConnectionFactory(ConnectionFactory rabbitConnectionFactory)
         {
@@ -34,7 +40,7 @@ namespace Spring.Amqp.Rabbit.Connection
                 connectionFactory =>
                     $"SpringAMQP#{this.GetIdentityHexString()}:{Interlocked.Increment(ref _defaultConnectionNameStrategyCounter) - 1}";
 
-            RecoverySucceededInternal += (sender, e) =>
+            _recoverySucceededInternal = (sender, e) =>
             {
                 if (Logger.IsEnabled(LogLevel.Debug)) Logger.LogDebug("Connection recovery succeeded.");
             };
@@ -42,21 +48,17 @@ namespace Spring.Amqp.Rabbit.Connection
             RabbitConnectionFactory = rabbitConnectionFactory ??
                 throw new ArgumentNullException(nameof(rabbitConnectionFactory),
                     "Target ConnectionFactory must not be null");
-
-            using var loggerFactory = new LoggerFactory();
-
-            Logger = loggerFactory.CreateLogger(GetType());
         }
 
         #region Events
 
-        public event EventHandler<ChannelCreatedEventArgs> ChannelCreated
+        public virtual event EventHandler<ChannelCreatedEventArgs> ChannelCreated
         {
             add
             {
                 lock (_lock)
                 {
-                    ChannelCreatedInternal += value;
+                    _channelCreatedInternal += value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelCreated += value;
                 }
@@ -65,20 +67,20 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 lock (_lock)
                 {
-                    ChannelCreatedInternal -= value;
+                    _channelCreatedInternal -= value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelCreated -= value;
                 }
             }
         }
 
-        public event EventHandler<ShutdownEventArgs> ChannelShutdown
+        public virtual event EventHandler<ShutdownEventArgs> ChannelShutdown
         {
             add
             {
                 lock (_lock)
                 {
-                    ChannelShutdownInternal += value;
+                    _channelShutdownInternal += value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelShutdown += value;
                 }
@@ -87,20 +89,20 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 lock (_lock)
                 {
-                    ChannelShutdownInternal -= value;
+                    _channelShutdownInternal -= value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.ChannelShutdown -= value;
                 }
             }
         }
 
-        public event EventHandler<IConnection> ConnectionCreated
+        public virtual event EventHandler<IConnection> ConnectionCreated
         {
             add
             {
                 lock (_lock)
                 {
-                    ConnectionCreatedInternal += value;
+                    _connectionCreatedInternal += value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionCreated += value;
                 }
@@ -109,20 +111,20 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 lock (_lock)
                 {
-                    ConnectionCreatedInternal -= value;
+                    _connectionCreatedInternal -= value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionCreated -= value;
                 }
             }
         }
 
-        public event EventHandler<IConnection> ConnectionClosed
+        public virtual event EventHandler<IConnection> ConnectionClosed
         {
             add
             {
                 lock (_lock)
                 {
-                    ConnectionClosedInternal += value;
+                    _connectionClosedInternal += value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionClosed += value;
                 }
@@ -131,20 +133,20 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 lock (_lock)
                 {
-                    ConnectionClosedInternal -= value;
+                    _connectionClosedInternal -= value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionClosed -= value;
                 }
             }
         }
 
-        public event EventHandler<ShutdownEventArgs> ConnectionShutdown
+        public virtual event EventHandler<ShutdownEventArgs> ConnectionShutdown
         {
             add
             {
                 lock (_lock)
                 {
-                    ConnectionShutdownInternal += value;
+                    _connectionShutdownInternal += value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionShutdown += value;
                 }
@@ -153,20 +155,20 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 lock (_lock)
                 {
-                    ConnectionShutdownInternal -= value;
+                    _connectionShutdownInternal -= value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.ConnectionShutdown -= value;
                 }
             }
         }
 
-        public event EventHandler RecoverySucceeded
+        public virtual event EventHandler RecoverySucceeded
         {
             add
             {
                 lock (_lock)
                 {
-                    RecoverySucceededInternal += value;
+                    _recoverySucceededInternal += value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.RecoverySucceeded += value;
                 }
@@ -175,19 +177,12 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 lock (_lock)
                 {
-                    RecoverySucceededInternal -= value;
+                    _recoverySucceededInternal -= value;
 
                     if (_publisherConnectionFactory != null) _publisherConnectionFactory.RecoverySucceeded -= value;
                 }
             }
         }
-
-        private event EventHandler<ChannelCreatedEventArgs> ChannelCreatedInternal;
-        private event EventHandler<ShutdownEventArgs> ChannelShutdownInternal;
-        private event EventHandler<IConnection> ConnectionCreatedInternal;
-        private event EventHandler<IConnection> ConnectionClosedInternal;
-        private event EventHandler<ShutdownEventArgs> ConnectionShutdownInternal;
-        private event EventHandler RecoverySucceededInternal;
 
         #endregion
 
@@ -195,8 +190,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
         public ConnectionFactory RabbitConnectionFactory { get; }
 
-        protected ILogger Logger { get; } = LoggerFactory.Create(builder => builder.AddConsole())
-                                                         .CreateLogger<AbstractConnectionFactory>();
+        protected ILogger Logger { get; } = LogFactory.GetLogger<AbstractConnectionFactory>();
 
         public string Host
         {
@@ -347,7 +341,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
                     autorecoveringConnection.RecoverySucceeded += (sender, e) =>
                     {
-                        var handler = RecoverySucceededInternal;
+                        var handler = _recoverySucceededInternal;
 
                         handler?.Invoke(sender, e);
                     };
@@ -385,42 +379,42 @@ namespace Spring.Amqp.Rabbit.Connection
 
         protected virtual void OnChannelCreated(ChannelCreatedEventArgs e)
         {
-            var handler = ChannelCreatedInternal;
+            var handler = _channelCreatedInternal;
 
             handler?.Invoke(this, e);
         }
 
         protected virtual void OnChannelShutdown(ShutdownEventArgs e)
         {
-            var handler = ChannelShutdownInternal;
+            var handler = _channelShutdownInternal;
 
             handler?.Invoke(this, e);
         }
 
         protected virtual void OnConnectionCreated(IConnection connection)
         {
-            var handler = ConnectionCreatedInternal;
+            var handler = _connectionCreatedInternal;
 
             handler?.Invoke(this, connection);
         }
 
         protected virtual void OnConnectionClosed(IConnection connection)
         {
-            var handler = ConnectionClosedInternal;
+            var handler = _connectionClosedInternal;
 
             handler?.Invoke(this, connection);
         }
 
         protected virtual void OnConnectionShutdown(ShutdownEventArgs e)
         {
-            var handler = ConnectionShutdownInternal;
+            var handler = _connectionShutdownInternal;
 
             handler?.Invoke(this, e);
         }
 
         protected virtual void OnRecoverySucceeded()
         {
-            var handler = RecoverySucceededInternal;
+            var handler = _recoverySucceededInternal;
 
             handler?.Invoke(this, EventArgs.Empty);
         }

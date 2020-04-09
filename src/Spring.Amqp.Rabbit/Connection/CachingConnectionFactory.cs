@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
+using Spring.Amqp.Rabbit.Support;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -56,14 +57,17 @@ namespace Spring.Amqp.Rabbit.Connection
             = new Dictionary<IConnection, SemaphoreSlim>();
         private readonly ConcurrentDictionary<string, int> _channelHighWaterMarks
             = new ConcurrentDictionary<string, int>();
+        private readonly ConcurrentQueue<ChannelCachingConnectionProxy> _idleConnections
+            = new ConcurrentQueue<ChannelCachingConnectionProxy>();
         private readonly CachingConnectionFactory _publisherConnectionFactory;
         private readonly object _connectionMonitor = new object();
 
-        private int _connectionHighWaterMark;
-        private int _channelCheckoutTimeout;
         private FactoryCacheMode _cacheMode = FactoryCacheMode.Channel;
+        private int _channelCheckoutTimeout;
         private int _channelCacheSize = DefaultChannelCacheSize;
+        private ConditionalExceptionLogger _closeExceptionLogger;
         private int _connectionCacheSize = 1;
+        private int _connectionHighWaterMark;
         private int _connectionLimit = int.MaxValue;
         private ConfirmType _confirmType = ConfirmType.None;
         private bool _publisherReturns;
@@ -145,6 +149,21 @@ namespace Spring.Amqp.Rabbit.Connection
 
         #endregion
 
+        #region Events
+
+        public override event EventHandler<IConnection> ConnectionCreated
+        {
+            add
+            {
+                base.ConnectionCreated += value;
+
+                if (_connection.TargetConnection != null) OnConnectionCreated(_connection);
+            }
+            remove => base.ConnectionCreated -= value;
+        }
+
+        #endregion
+
         #region Enums
 
         /// <summary>
@@ -182,6 +201,8 @@ namespace Spring.Amqp.Rabbit.Connection
         }
 
         #endregion
+
+        #region Properties
 
         public int ChannelCacheSize
         {
@@ -233,6 +254,8 @@ namespace Spring.Amqp.Rabbit.Connection
 
         public override bool IsSimplePublisherConfirms => _confirmType == ConfirmType.Simple;
 
+        #endregion
+
         /// <summary>
         /// Set the connection limit when using cache mode Connection. When the limit is reached and there are no idle
         /// connections, the <see cref="SetChannelCheckoutTimeout(int)"/> is used to wait for a connection to become
@@ -261,6 +284,20 @@ namespace Spring.Amqp.Rabbit.Connection
 
             if (_publisherConnectionFactory != null)
                 _publisherConnectionFactory.SetChannelCheckoutTimeout(channelCheckoutTimeout);
+        }
+
+        /// <summary>
+        /// Set the strategy for logging close exceptions; by default, if a channel is closed due to a failed passive
+        /// queue declaration, it is logged at debug level.
+        /// </summary>
+        /// <param name="closeExceptionLogger">The <see cref="ConditionalExceptionLogger"/>.</param>
+        public void SetCloseExceptionLogger(ConditionalExceptionLogger closeExceptionLogger)
+        {
+            _closeExceptionLogger = closeExceptionLogger ??
+                throw new ArgumentNullException(nameof(closeExceptionLogger));
+
+            if (_publisherConnectionFactory != null)
+                _publisherConnectionFactory.SetCloseExceptionLogger(closeExceptionLogger);
         }
 
         /// <summary>
@@ -681,14 +718,22 @@ namespace Spring.Amqp.Rabbit.Connection
                 return _factory.GetChannel(this, transactional);
             }
 
-            public bool IsOpen()
+            public void Close()
             {
-                return _target?.IsOpen() ?? false;
+                if (_factory._cacheMode == FactoryCacheMode.Channel)
+                {
+                    // TODO: Finish
+                }
             }
 
             public void Dispose()
             {
                 Dispose(true);
+            }
+
+            public bool IsOpen()
+            {
+                return _target?.IsOpen() ?? false;
             }
 
             internal IModel CreateBareChannel(bool transactional)
@@ -703,12 +748,38 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 if (!_disposedValue)
                 {
-                    if (disposing)
-                    {
-                        // TODO: dispose managed state (managed objects).
-                    }
+                    if (disposing) DisposeInternal();
 
                     _disposedValue = true;
+                }
+            }
+
+            private int CountOpenIdleConnections()
+            {
+                return _factory._idleConnections.Count(connection => connection.IsOpen());
+            }
+
+            private void DisposeInternal()
+            {
+                if (_factory._cacheMode != FactoryCacheMode.Connection) return;
+
+                lock (_factory._connectionMonitor)
+                {
+                    if (_factory._idleConnections.Contains(this)) return;
+
+                    if (!IsOpen() || CountOpenIdleConnections() >= _factory.ConnectionCacheSize)
+                    {
+                        if (_factory.Logger.IsEnabled(LogLevel.Debug))
+                            _factory.Logger.LogDebug("Completely closing connection '{connection}'.", this);
+                    }
+
+                    if (_factory.Logger.IsEnabled(LogLevel.Debug))
+                        _factory.Logger.LogDebug("Returning connection '{connection}' to cache.", this);
+
+                    _factory._idleConnections.Enqueue(this);
+
+                    if (_factory._connectionHighWaterMark < _factory._idleConnections.Count)
+                        Interlocked.Exchange(ref _factory._connectionHighWaterMark, _factory._idleConnections.Count);
                 }
             }
         }
