@@ -100,6 +100,23 @@ namespace Spring.Amqp.Rabbit.Connection
 
             _publisherConnectionFactory = new CachingConnectionFactory(RabbitConnectionFactory, true);
             SetPublisherConnectionFactory(_publisherConnectionFactory);
+
+            _closeExceptionLogger = (logger, message, exception, args) =>
+            {
+                if (exception is OperationInterruptedException oie)
+                {
+                    if (RabbitUtils.IsPassiveDeclarationChannelClose(oie) && logger.IsEnabled(LogLevel.Debug))
+                        logger.LogDebug(oie, message, args);
+                    else if (RabbitUtils.IsExclusiveUseChannelClose(oie) && logger.IsEnabled(LogLevel.Information))
+                        logger.LogInformation(oie, message, args);
+                    else if (!RabbitUtils.IsNormalChannelClose(oie))
+                        logger.LogError(oie, message, args);
+                }
+                else
+                {
+                    logger.LogError(exception, "Unexpected invocation of {type} with message: ", GetType());
+                }
+            };
         }
 
         public CachingConnectionFactory(Uri uri) : base(NewRabbitConnectionFactory())
@@ -110,6 +127,24 @@ namespace Spring.Amqp.Rabbit.Connection
 
             _publisherConnectionFactory = new CachingConnectionFactory(RabbitConnectionFactory, true);
             SetPublisherConnectionFactory(_publisherConnectionFactory);
+
+            _closeExceptionLogger = (logger, message, exception, args) =>
+            {
+                if (exception is OperationInterruptedException oie)
+                {
+                    if (RabbitUtils.IsPassiveDeclarationChannelClose(oie) && logger.IsEnabled(LogLevel.Debug))
+                        logger.LogDebug(oie, message, args);
+                    else if (RabbitUtils.IsExclusiveUseChannelClose(oie) && logger.IsEnabled(LogLevel.Information))
+                        logger.LogInformation(oie, message, args);
+                    else if (!RabbitUtils.IsNormalChannelClose(oie))
+                        logger.LogError(oie, message, args);
+                }
+                else
+                {
+                    logger.LogError(exception, "Unexpected invocation of {type} with message: {message}", GetType(),
+                        message, args);
+                }
+            };
         }
 
         public CachingConnectionFactory(ConnectionFactory rabbitConnectionFactory) : this(rabbitConnectionFactory, false)
@@ -145,6 +180,23 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 _publisherConnectionFactory = null;
             }
+
+            _closeExceptionLogger = (logger, message, exception, args) =>
+            {
+                if (exception is OperationInterruptedException oie)
+                {
+                    if (RabbitUtils.IsPassiveDeclarationChannelClose(oie) && logger.IsEnabled(LogLevel.Debug))
+                        logger.LogDebug(oie, message, args);
+                    else if (RabbitUtils.IsExclusiveUseChannelClose(oie) && logger.IsEnabled(LogLevel.Information))
+                        logger.LogInformation(oie, message, args);
+                    else if (!RabbitUtils.IsNormalChannelClose(oie))
+                        logger.LogError(oie, message, args);
+                }
+                else
+                {
+                    logger.LogError(exception, "Unexpected invocation of {type} with message: ", GetType());
+                }
+            };
         }
 
         #endregion
@@ -300,6 +352,11 @@ namespace Spring.Amqp.Rabbit.Connection
                 _publisherConnectionFactory.SetCloseExceptionLogger(closeExceptionLogger);
         }
 
+        public void SetPublisherChannelFactory()
+        {
+
+        }
+
         /// <summary>
         /// Use full (correlated) publisher confirms, with correlation data and a callback for each message.
         /// </summary>
@@ -442,16 +499,13 @@ namespace Spring.Amqp.Rabbit.Connection
 
         private void ShutdownCompleted(object sender, ShutdownEventArgs eventArgs)
         {
-            //this.closeExceptionLogger.log(logger, "Channel shutdown", eventArgs);
+            _closeExceptionLogger(Logger, "Channel shutdown", null, eventArgs);
+
             var protocolClassId = eventArgs.ClassId;
             if (protocolClassId == RabbitUtils.ChannelProtocolClassId20)
-            {
-                //getChannelListener().onShutDown(eventArgs);
-            }
+                OnChannelShutdown(eventArgs);
             else if (protocolClassId == RabbitUtils.ConnectionProtocolClassId10)
-            {
-                //getConnectionListener().onShutDown(eventArgs);
-            }
+                OnConnectionShutdown(eventArgs);
         }
 
         private IModel GetChannel(ChannelCachingConnectionProxy connection, bool transactional)
@@ -593,33 +647,37 @@ namespace Spring.Amqp.Rabbit.Connection
             return channelList;
         }
 
-        //private IChannelProxy GetCachedChannelProxy(ChannelCachingConnectionProxy connection,
-        //    LinkedList<IChannelProxy> channelList, bool transactional)
-        //{
-        //    var targetChannel = CreateBareChannel(connection, transactional);
+        private IChannelProxy GetCachedChannelProxy(ChannelCachingConnectionProxy connection,
+            LinkedList<IChannelProxy> channelList, bool transactional)
+        {
+            var targetChannel = CreateBareChannel(connection, transactional);
 
-        //    if (Logger.IsEnabled(LogLevel.Debug))
-        //        Logger.LogDebug("Creating cached Rabbit Channel from {targetChannel}.", targetChannel);
-        //}
+            if (Logger.IsEnabled(LogLevel.Debug))
+                Logger.LogDebug("Creating cached Rabbit Channel from {targetChannel}.", targetChannel);
+
+            OnChannelCreated(new ChannelCreatedEventArgs
+            {
+                Channel = targetChannel,
+                Transactional = transactional
+            });
+
+            if (_confirmType == ConfirmType.Correlated || _publisherReturns)
+        }
 
         private IModel CreateBareChannel(ChannelCachingConnectionProxy connection, bool transactional)
         {
             if (_cacheMode == FactoryCacheMode.Channel)
             {
-                if (!_connection.IsOpen())
-                {
-                    lock (_connectionMonitor)
-                    {
-                        if (!_connection.IsOpen())
-                        {
-                            //_connection.notifyCloseIfNecessary();
-                        }
+                if (_connection.IsOpen()) return DoCreateBareChannel(_connection, transactional);
 
-                        if (!_connection.IsOpen())
-                        {
-                            _connection.TargetConnection = null;
-                            //CreateConnection();
-                        }
+                lock (_connectionMonitor)
+                {
+                    if (!_connection.IsOpen()) _connection.NotifyCloseIfNecessary();
+
+                    if (!_connection.IsOpen())
+                    {
+                        _connection.TargetConnection = null;
+                        CreateConnection();
                     }
                 }
 
@@ -627,25 +685,37 @@ namespace Spring.Amqp.Rabbit.Connection
             }
             else if (_cacheMode == FactoryCacheMode.Channel)
             {
-                if (!connection.IsOpen())
+                if (connection.IsOpen()) return DoCreateBareChannel(connection, transactional);
+
+                lock (_connectionMonitor)
                 {
-                    lock (_connectionMonitor)
-                    {
-                        if (_allocatedConnectionNonTransactionalChannels.TryGetValue(connection, out var channel))
-                            channel.Clear();
-                        if (_allocatedConnectionTransactionalChannels.TryGetValue(connection, out channel))
-                            channel.Clear();
+                    if (_allocatedConnectionNonTransactionalChannels.TryGetValue(connection, out var channel))
+                        channel.Clear();
+                    if (_allocatedConnectionTransactionalChannels.TryGetValue(connection, out channel))
+                        channel.Clear();
 
-                        //connection.notifyCloseIfNecessary();
+                    connection.NotifyCloseIfNecessary();
 
-                        //refreshProxyConnection(connection);
-                    }
+                    RefreshProxyConnection(connection);
                 }
 
                 return DoCreateBareChannel(connection, transactional);
             }
 
             return null;
+        }
+
+        private void RefreshProxyConnection(ChannelCachingConnectionProxy connection)
+        {
+            connection.Close();
+            connection.NotifyCloseIfNecessary();
+            
+            connection.TargetConnection = CreateBareConnection();
+            
+            connection.CloseNotified = false;
+
+            if (Logger.IsEnabled(LogLevel.Debug))
+                Logger.LogDebug("Refreshed existing connection '{connection}'", connection);
         }
 
         private IModel DoCreateBareChannel(ChannelCachingConnectionProxy connection, bool transactional)
@@ -658,9 +728,9 @@ namespace Spring.Amqp.Rabbit.Connection
                 {
                     channel.ConfirmSelect();
                 }
-                catch (IOException ex)
+                catch (IOException e)
                 {
-                    Logger.LogError(ex, "Could not configure the channel to receive publisher confirms.");
+                    Logger.LogError(e, "Could not configure the channel to receive publisher confirms.");
                 }
             }
 
@@ -751,6 +821,12 @@ namespace Spring.Amqp.Rabbit.Connection
 
             public RabbitMQ.Client.IConnection DelegateConnection => _target.DelegateConnection;
 
+            internal bool CloseNotified
+            {
+                get => _closeNotified > 0;
+                set => Interlocked.Exchange(ref _closeNotified, value ? 1 : 0);
+            }
+
             #endregion
 
             public override string ToString()
@@ -805,6 +881,11 @@ namespace Spring.Amqp.Rabbit.Connection
                 return _target.CreateChannel(transactional);
             }
 
+            internal void NotifyCloseIfNecessary()
+            {
+                if (Interlocked.Exchange(ref _closeNotified, 1) == 0) _factory.OnConnectionClosed(this);
+            }
+
             protected virtual void Dispose(bool disposing)
             {
                 if (!_disposedValue)
@@ -844,11 +925,6 @@ namespace Spring.Amqp.Rabbit.Connection
                     if (_factory._connectionHighWaterMark < _factory._idleConnections.Count)
                         Interlocked.Exchange(ref _factory._connectionHighWaterMark, _factory._idleConnections.Count);
                 }
-            }
-
-            private void NotifyCloseIfNecessary()
-            {
-                if (Interlocked.Exchange(ref _closeNotified, 1) == 0) _factory.OnConnectionClosed(this);
             }
         }
     }
