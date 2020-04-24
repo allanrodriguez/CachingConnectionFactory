@@ -1,7 +1,6 @@
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
-using RabbitMQ.Client.Framing.Impl;
 using Spring.Amqp.Rabbit.Support;
 using System;
 
@@ -10,13 +9,13 @@ namespace Spring.Amqp.Rabbit.Connection
     /// <summary>
     /// Simply an <see cref="IConnection"/>.
     /// </summary>
-    public class SimpleConnection : IConnection, NetworkConnection
+    public class SimpleConnection : IConnection, INetworkConnection
     {
-        private readonly int _closeTimeout;
+        private readonly TimeSpan _closeTimeout;
 
         private bool _disposed;
 
-        public SimpleConnection(RabbitMQ.Client.IConnection connectionDelegate, int closeTimeout)
+        public SimpleConnection(RabbitMQ.Client.IConnection connectionDelegate, TimeSpan closeTimeout)
         {
             DelegateConnection = connectionDelegate ?? throw new ArgumentNullException(nameof(connectionDelegate));
             _closeTimeout = closeTimeout;
@@ -60,7 +59,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
         public bool IsOpen()
         {
-            if (!_disposed && DelegateConnection is AutorecoveringConnection && !DelegateConnection.IsOpen)
+            if (!_disposed && DelegateConnection is IAutorecoveringConnection && !DelegateConnection.IsOpen)
                 throw new AutoRecoverConnectionNotCurrentlyOpenException("Auto recovery connection is not currently open.");
 
             return DelegateConnection != null && DelegateConnection.IsOpen;

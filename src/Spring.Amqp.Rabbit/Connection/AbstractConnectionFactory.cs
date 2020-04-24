@@ -12,7 +12,7 @@ namespace Spring.Amqp.Rabbit.Connection
 {
     public abstract class AbstractConnectionFactory : IConnectionFactory, IDisposable
     {
-        public const int DefaultCloseTimeout = 30000;
+        public static readonly TimeSpan DefaultCloseTimeout = TimeSpan.FromMilliseconds(30000d);
 
         private const string BadUri = "Uri was passed an invalid URI; it is ignored";
         private const string PublisherSuffix = ".publish";
@@ -20,7 +20,7 @@ namespace Spring.Amqp.Rabbit.Connection
         private readonly object _lock = new object();
 
         private IList<AmqpTcpEndpoint> _addresses;
-        private int _closeTimeout = DefaultCloseTimeout;
+        private TimeSpan _closeTimeout = DefaultCloseTimeout;
         private ConnectionNameStrategy _connectionNameStrategy;
         private int _defaultConnectionNameStrategyCounter;
         private bool _disposed;
@@ -243,7 +243,7 @@ namespace Spring.Amqp.Rabbit.Connection
             set => RabbitConnectionFactory.RequestedConnectionTimeout = value;
         }
 
-        public int CloseTimeout
+        public TimeSpan CloseTimeout
         {
             get => _closeTimeout;
             set
