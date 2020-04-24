@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
-using RabbitMQ.Client.Framing.Impl;
 using Spring.Amqp.Rabbit.Support;
 using System;
 using System.Collections.Generic;
@@ -232,13 +231,13 @@ namespace Spring.Amqp.Rabbit.Connection
             }
         }
 
-        public ushort RequestedHeartbeat
+        public TimeSpan RequestedHeartbeat
         {
             get => RabbitConnectionFactory.RequestedHeartbeat;
             set => RabbitConnectionFactory.RequestedHeartbeat = value;
         }
 
-        public int RequestedConnectionTimeout
+        public TimeSpan RequestedConnectionTimeout
         {
             get => RabbitConnectionFactory.RequestedConnectionTimeout;
             set => RabbitConnectionFactory.RequestedConnectionTimeout = value;
@@ -325,7 +324,7 @@ namespace Spring.Amqp.Rabbit.Connection
 
                 var connection = new SimpleConnection(rabbitConnection, _closeTimeout);
 
-                if (rabbitConnection is AutorecoveringConnection autorecoveringConnection)
+                if (rabbitConnection is IAutorecoveringConnection autorecoveringConnection)
                 {
                     autorecoveringConnection.RecoverySucceeded += (sender, args) =>
                     {
