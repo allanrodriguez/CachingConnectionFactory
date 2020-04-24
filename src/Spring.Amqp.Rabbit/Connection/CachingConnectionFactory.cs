@@ -63,7 +63,7 @@ namespace Spring.Amqp.Rabbit.Connection
         private readonly object _connectionMonitor = new object();
 
         private FactoryCacheMode _cacheMode = FactoryCacheMode.Channel;
-        private int _channelCheckoutTimeout;
+        private double _channelCheckoutTimeout;
         private int _channelCacheSize = DefaultChannelCacheSize;
         private ConditionalExceptionLogger _closeExceptionLogger;
         private int _connectionCacheSize = 1;
@@ -73,7 +73,7 @@ namespace Spring.Amqp.Rabbit.Connection
         private bool _publisherReturns;
         private volatile bool _active = true;
         private volatile bool _initialized;
-        private volatile bool _stopped;
+        private bool _disposed;
 
         #endregion
 
@@ -438,6 +438,37 @@ namespace Spring.Amqp.Rabbit.Connection
             if (_publisherConnectionFactory != null) _publisherConnectionFactory.ResetConnection();
         }
 
+        public override IConnection CreateConnection()
+        {
+            if (_disposed)
+                throw new AmqpClosedException("The ConnectionFactory is closed and can no longer create connections.");
+
+            lock (_connectionMonitor)
+            {
+                if (_cacheMode == FactoryCacheMode.Channel)
+                {
+                    if (_connection.TargetConnection != null) return _connection;
+
+                    _connection.TargetConnection = CreateBareConnection();
+
+                    if (!_checkoutPermits.ContainsKey(_connection))
+                        _checkoutPermits.Add(_connection, new SemaphoreSlim(_channelCacheSize));
+
+                    _connection.CloseNotified = false;
+
+                    OnConnectionCreated(_connection);
+
+                    return _connection;
+                }
+                else if (_cacheMode == FactoryCacheMode.Connection)
+                {
+                    return ConnectionFromCache();
+                }
+            }
+
+            return null;
+        }
+
         protected void CloseAndClear(ICollection<IChannelProxy> channels)
         {
             if (channels == null) throw new ArgumentNullException(nameof(channels));
@@ -489,6 +520,119 @@ namespace Spring.Amqp.Rabbit.Connection
         private static ConnectionFactory NewRabbitConnectionFactory()
         {
             return new ConnectionFactory { AutomaticRecoveryEnabled = false };
+        }
+
+        private IConnection ConnectionFromCache()
+        {
+            var cachedConnection = FindIdleConnection();
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            if (cachedConnection == null && CountOpenConnections() >= _connectionLimit)
+                cachedConnection = WaitForConnection(now);
+
+            if (cachedConnection == null)
+            {
+                if (CountOpenConnections() >= _connectionLimit &&
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - now >= _channelCheckoutTimeout)
+                {
+                    throw new AmqpTimeoutException("Timed out attempting to get a connection.");
+                }
+
+                cachedConnection = new ChannelCachingConnectionProxy(this, CreateBareConnection());
+
+                if (Logger.IsEnabled(LogLevel.Debug))
+                    Logger.LogDebug("Adding new connection '{connection}'.", cachedConnection);
+
+                _allocatedConnections.Add(cachedConnection);
+                _allocatedConnectionNonTransactionalChannels.Add(cachedConnection, new LinkedList<IChannelProxy>());
+                _channelHighWaterMarks.AddOrUpdate(
+                    _allocatedConnectionNonTransactionalChannels[cachedConnection].GetIdentityHexString(), 0,
+                    (key, existingValue) => 0);
+                _allocatedConnectionTransactionalChannels.Add(cachedConnection, new LinkedList<IChannelProxy>());
+                _channelHighWaterMarks.AddOrUpdate(
+                    _allocatedConnectionTransactionalChannels[cachedConnection].GetIdentityHexString(), 0,
+                    (key, existingValue) => 0);
+                _checkoutPermits.Add(cachedConnection, new SemaphoreSlim(_channelCacheSize));
+                OnConnectionCreated(cachedConnection);
+            }
+            else if (!cachedConnection.IsOpen())
+            {
+                try
+                {
+                    RefreshProxyConnection(cachedConnection);
+                }
+                catch (Exception)
+                {
+                    _idleConnections.Enqueue(cachedConnection);
+                }
+            }
+            else if (Logger.IsEnabled(LogLevel.Debug))
+            {
+                Logger.LogDebug("Obtained connection '{connection}' from cache.", cachedConnection);
+            }
+
+            return cachedConnection;
+        }
+
+        private ChannelCachingConnectionProxy WaitForConnection(double now)
+        {
+            ChannelCachingConnectionProxy cachedConnection = null;
+
+            while (cachedConnection == null &&
+                   DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - now < _channelCheckoutTimeout)
+            {
+                if (CountOpenConnections() < _connectionLimit) continue;
+
+                try
+                {
+                    lock (_connectionMonitor) Thread.Sleep(TimeSpan.FromMilliseconds(_channelCheckoutTimeout));
+
+                    cachedConnection = FindIdleConnection();
+                }
+                catch (ThreadInterruptedException e)
+                {
+                    Thread.CurrentThread.Interrupt();
+                    throw new AmqpException("Interrupted while waiting for a connection.", e);
+                }
+            }
+
+            return cachedConnection;
+        }
+
+        private ChannelCachingConnectionProxy FindIdleConnection()
+        {
+            ChannelCachingConnectionProxy cachedConnection = null;
+            var lastIdle = _idleConnections.LastOrDefault();
+
+            while (cachedConnection == null)
+            {
+                _idleConnections.TryDequeue(out cachedConnection);
+
+                if (cachedConnection == null) break;
+
+                if (cachedConnection.IsOpen()) continue;
+
+                if (Logger.IsEnabled(LogLevel.Debug))
+                    Logger.LogDebug("Skipping closed connection '{cachedConnection}'.", cachedConnection);
+
+                cachedConnection.NotifyCloseIfNecessary();
+                _idleConnections.Enqueue(cachedConnection);
+
+                if (cachedConnection == lastIdle)
+                {
+                    _idleConnections.TryDequeue(out cachedConnection);
+                    break;
+                }
+
+                cachedConnection = null;
+            }
+
+            return cachedConnection;
+        }
+
+        private int CountOpenConnections()
+        {
+            return _allocatedConnections.Count(connection => connection.IsOpen());
         }
 
         private void InitCacheWaterMarks()
@@ -554,7 +698,7 @@ namespace Spring.Amqp.Rabbit.Connection
             {
                 try
                 {
-                    if (!permits.Wait(_channelCheckoutTimeout))
+                    if (!permits.Wait(TimeSpan.FromMilliseconds(_channelCheckoutTimeout)))
                         throw new AmqpTimeoutException("No available channels.");
 
                     if (Logger.IsEnabled(LogLevel.Debug))
@@ -608,9 +752,7 @@ namespace Spring.Amqp.Rabbit.Connection
         {
             try
             {
-                var target = channel.TargetChannel;
-
-                if (target != null) target.Close();
+                channel.TargetChannel?.Close();
             }
             catch (AlreadyClosedException ex)
             {
@@ -647,22 +789,22 @@ namespace Spring.Amqp.Rabbit.Connection
             return channelList;
         }
 
-        private IChannelProxy GetCachedChannelProxy(ChannelCachingConnectionProxy connection,
-            LinkedList<IChannelProxy> channelList, bool transactional)
-        {
-            var targetChannel = CreateBareChannel(connection, transactional);
+        //private IChannelProxy GetCachedChannelProxy(ChannelCachingConnectionProxy connection,
+        //    LinkedList<IChannelProxy> channelList, bool transactional)
+        //{
+        //    var targetChannel = CreateBareChannel(connection, transactional);
 
-            if (Logger.IsEnabled(LogLevel.Debug))
-                Logger.LogDebug("Creating cached Rabbit Channel from {targetChannel}.", targetChannel);
+        //    if (Logger.IsEnabled(LogLevel.Debug))
+        //        Logger.LogDebug("Creating cached Rabbit Channel from {targetChannel}.", targetChannel);
 
-            OnChannelCreated(new ChannelCreatedEventArgs
-            {
-                Channel = targetChannel,
-                Transactional = transactional
-            });
+        //    OnChannelCreated(new ChannelCreatedEventArgs
+        //    {
+        //        Channel = targetChannel,
+        //        Transactional = transactional
+        //    });
 
-            if (_confirmType == ConfirmType.Correlated || _publisherReturns)
-        }
+        //    if (_confirmType == ConfirmType.Correlated || _publisherReturns)
+        //}
 
         private IModel CreateBareChannel(ChannelCachingConnectionProxy connection, bool transactional)
         {
@@ -742,11 +884,6 @@ namespace Spring.Amqp.Rabbit.Connection
             if (channel != null) channel.ModelShutdown += ShutdownCompleted;
 
             return channel;
-        }
-
-        public override IConnection CreateConnection()
-        {
-            throw new NotImplementedException();
         }
 
         private class ChannelCachingConnectionProxy : IConnectionProxy
